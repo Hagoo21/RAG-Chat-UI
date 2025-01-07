@@ -30,8 +30,7 @@ export const initState = {
           id: 1682511616366,
           sentTime: "1681827632313",
           role: "assistant",
-          content:
-            '以下是一个简单的React Modal组件示例：\n\n```jsx\nimport React, { useState } from \'react\';\n\nconst Modal = ({ isOpen, onClose, children }) => {\n  const [isModalOpen, setIsModalOpen] = useState(isOpen);\n\n  const handleClose = () => {\n    setIsModalOpen(false);\n    onClose();\n  };\n\n  return (\n    <>\n      {isModalOpen && (\n        <div className="modal">\n          <div className="modal-content">\n            <span className="close" onClick={handleClose}>\n              &times;\n            </span>\n            {children}\n          </div>\n        </div>\n      )}\n    </>\n  );\n};\n\nexport default Modal;\n```\n\n在这个组件中，我们使用useState钩子来跟踪模态框是否打开。当isOpen prop改变时，我们更新状态以反映新值。\n\n我们还定义了一个叫做handleClose的函数，它将关闭模态框并调用onClose回调函数（如果有）。\n\n最后，我们返回一个包含模态框内容的div元素，并根据isModalOpen状态决定是否呈现该元素。',
+          content: '以下是一个简单的React Modal组件示例：\n\n```jsx\nimport React, { useState } from \'react\';\n\nconst Modal = ({ isOpen, onClose, children }) => {\n  const [isModalOpen, setIsModalOpen] = useState(isOpen);\n\n  const handleClose = () => {\n    setIsModalOpen(false);\n    onClose();\n  };\n\n  return (\n    <>\n      {isModalOpen && (\n        <div className="modal">\n          <div className="modal-content">\n            <span className="close" onClick={handleClose}>\n              &times;\n            </span>\n            {children}\n          </div>\n        </div>\n      )}\n    </>\n  );\n};\n\nexport default Modal;\n```\n\n在这个组件中，我们使用useState钩子来跟踪模态框是否打开。当isOpen prop改变时，我们更新状态以反映新值。\n\n我们还定义了一个叫做handleClose的函数，它将关闭模态框并调用onClose回调函数（如果有）。\n\n最后，我们返回一个包含模态框内容的div元素，并根据isModalOpen状态决定是否呈现该元素。',
         },
       ],
     },
@@ -72,7 +71,8 @@ export const initState = {
     sidebar: true,
     inputing: false,
     thinking: false,
-    apps: true,
+    apps: false,
+    knowledge: false
   },
   typeingMessage: {},
   version: "0.1.0",

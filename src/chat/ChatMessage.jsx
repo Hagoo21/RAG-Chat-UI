@@ -6,6 +6,7 @@ import { ConfigInfo } from './ConfigInfo'
 import { useGlobal } from './context'
 import { useMesssage, useSendKey, useOptions } from './hooks'
 import { dateFormat } from './utils'
+import { sendMessage } from './service/api'
 import avatar from '@/assets/images/avatar-gpt.png'
 import styles from './style/message.module.less'
 import { classnames } from '../components/utils'
@@ -30,21 +31,13 @@ export function MessageHeader() {
         <Popover position="bottom" content={<ConfigInfo />}>
           <Icon className={styles.icon} type="more" />
         </Popover>
-        <Icon type="download" className={styles.icon} />
       </div>
     </div>
   )
 }
 
-export function EditorMessage() {
-  return (
-    <div>
-      <Textarea rows="3" />
-    </div>)
-}
-
 export function MessageItem(props) {
-  const { content, sentTime, role, } = props
+  const { content, sentTime, role } = props
   const { removeMessage } = useGlobal()
   return (
     <div className={classnames(styles.item, styles[role])}>
@@ -73,28 +66,89 @@ export function MessageItem(props) {
 }
 
 export function MessageBar() {
-  const { sendMessage, setMessage, is, options, setIs, typeingMessage, clearTypeing, stopResonse } = useGlobal()
-  useSendKey(sendMessage, options.general.command)
+  const { 
+    setMessage, 
+    is, 
+    options, 
+    setIs, 
+    typeingMessage, 
+    clearTypeing, 
+    stopResonse,
+    chat,
+    currentChat,
+    setState
+  } = useGlobal()
+  
+  const handleSendMessage = async () => {
+    if (typeingMessage?.content) {
+      const newMessage = {
+        ...typeingMessage,
+        sentTime: Date.now(),
+      };
+      
+      setIs({ thinking: true });
+      clearTypeing();
+
+      try {
+        const response = await sendMessage(newMessage.content);
+        
+        // Add user message and assistant response
+        const messages = [
+          ...chat[currentChat].messages,
+          newMessage,
+          {
+            content: response.answer,
+            role: "assistant", 
+            sentTime: Date.now(),
+            id: Date.now()
+          }
+        ];
+
+        let newChat = [...chat];
+        newChat.splice(currentChat, 1, { ...chat[currentChat], messages });
+        
+        setState({
+          is: { ...is, thinking: false },
+          chat: newChat,
+        });
+      } catch (error) {
+        console.error('Chat failed:', error);
+        setIs({ thinking: false });
+      }
+    }
+  };
+
+  useSendKey(handleSendMessage, options.general.command)
+
   return (
     <div className={styles.bar}>
       {is.thinking && <div className={styles.bar_tool}>
         <div className={styles.bar_loading}>
-          <div className="flex-c"><span>Thinking</span> <Loading /></div><Button size="min" className={styles.stop} onClick={stopResonse} icon="stop">Stop Resonse</Button>
+          <div className="flex-c"><span>Thinking</span> <Loading /></div>
+          <Button size="min" className={styles.stop} onClick={stopResonse} icon="stop">Stop Response</Button>
         </div>
       </div>}
       <div className={styles.bar_inner}>
         <div className={styles.bar_type}>
-          <Textarea transparent={true} rows="3" value={typeingMessage?.content || ''} onFocus={() => setIs({ inputing: true })} onBlur={() => setIs({ inputing: false })} placeholder="Enter somthing...." onChange={setMessage} />
+          <Textarea 
+            transparent={true} 
+            rows="3" 
+            value={typeingMessage?.content || ''} 
+            onFocus={() => setIs({ inputing: true })} 
+            onBlur={() => setIs({ inputing: false })} 
+            placeholder="Enter something..." 
+            onChange={setMessage} 
+          />
         </div>
         <div className={styles.bar_icon}>
           {typeingMessage?.content &&
             <Tooltip text="clear">
               <Icon className={styles.icon} type="cancel" onClick={clearTypeing} />
             </Tooltip>}
-          <Tooltip text="history">
-            <Icon className={styles.icon} type="history" />
+          <Tooltip text="voice input">
+            <Icon className={styles.icon} type="mic" />
           </Tooltip>
-          <Icon className={styles.icon} type="send" onClick={sendMessage} />
+          <Icon className={styles.icon} type="send" onClick={handleSendMessage} />
         </div>
       </div>
     </div>
@@ -105,14 +159,16 @@ export function MessageContainer() {
   const { options } = useGlobal()
   const { message } = useMesssage()
   const { messages = [] } = message || {}
+  
   if (options?.openai?.apiKey) {
     return (
       <React.Fragment>
-        {
-          messages.length ? <div className={styles.container}>
+        {messages.length ? 
+          <div className={styles.container}>
             {messages.map((item, index) => <MessageItem key={index} {...item} />)}
             {message?.error && <Error />}
-          </div> : <ChatHelp />
+          </div> : 
+          <ChatHelp />
         }
       </React.Fragment>
     )
@@ -133,7 +189,6 @@ export function ChatMessage() {
         </ScrollView>
         <MessageBar />
       </div>
-    </React.Fragment >
+    </React.Fragment>
   )
 }
-

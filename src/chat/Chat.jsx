@@ -2,8 +2,8 @@ import React from 'react'
 import { ChatMessage } from './ChatMessage'
 import { ChatSideBar } from './ChatSideBar'
 import { ChatOpitons } from './ChatOpitons'
-import { Apps } from './apps/index'
 import { ChatList } from './ChatList'
+import { KnowledgeBase } from './KnowledgeBase'
 import { classnames } from '../components/utils'
 import { useGlobal } from './context'
 import { Search } from '@/components'
@@ -27,12 +27,18 @@ export default function Chat() {
             <React.Fragment>
               {
                 is.sidebar && <div className={styles.sider}>
-                  <div className={styles.search}>
-                    <Search onSearch={onSearch} />
-                  </div>
-                  <ScrollView>
-                    {is.apps ? <Apps /> : <ChatList />}
-                  </ScrollView>
+                  {!is.knowledge ? (
+                    <>
+                      <div className={styles.search}>
+                        <Search onSearch={onSearch} />
+                      </div>
+                      <ScrollView>
+                        <ChatList />
+                      </ScrollView>
+                    </>
+                  ) : (
+                    <KnowledgeBase />
+                  )}
                 </div>
               }
               <ChatMessage />
