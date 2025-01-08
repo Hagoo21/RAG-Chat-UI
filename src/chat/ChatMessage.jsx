@@ -66,59 +66,8 @@ export function MessageItem(props) {
 }
 
 export function MessageBar() {
-  const { 
-    setMessage, 
-    is, 
-    options, 
-    setIs, 
-    typeingMessage, 
-    clearTypeing, 
-    stopResonse,
-    chat,
-    currentChat,
-    setState
-  } = useGlobal()
-  
-  const handleSendMessage = async () => {
-    if (typeingMessage?.content) {
-      const newMessage = {
-        ...typeingMessage,
-        sentTime: Date.now(),
-      };
-      
-      setIs({ thinking: true });
-      clearTypeing();
-
-      try {
-        const response = await sendMessage(newMessage.content);
-        
-        // Add user message and assistant response
-        const messages = [
-          ...chat[currentChat].messages,
-          newMessage,
-          {
-            content: response.answer,
-            role: "assistant", 
-            sentTime: Date.now(),
-            id: Date.now()
-          }
-        ];
-
-        let newChat = [...chat];
-        newChat.splice(currentChat, 1, { ...chat[currentChat], messages });
-        
-        setState({
-          is: { ...is, thinking: false },
-          chat: newChat,
-        });
-      } catch (error) {
-        console.error('Chat failed:', error);
-        setIs({ thinking: false });
-      }
-    }
-  };
-
-  useSendKey(handleSendMessage, options.general.command)
+  const { sendMessage, setMessage, is, options, setIs, typeingMessage, clearTypeing, stopResonse } = useGlobal()
+  useSendKey(sendMessage, options.general.command)
 
   return (
     <div className={styles.bar}>
@@ -148,7 +97,7 @@ export function MessageBar() {
           <Tooltip text="voice input">
             <Icon className={styles.icon} type="mic" />
           </Tooltip>
-          <Icon className={styles.icon} type="send" onClick={handleSendMessage} />
+          <Icon className={styles.icon} type="send" onClick={sendMessage} />
         </div>
       </div>
     </div>

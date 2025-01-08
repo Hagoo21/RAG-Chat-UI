@@ -9,9 +9,11 @@ export default function action(state, dispatch) {
   return {
     setState,
     clearTypeing() {
-      console.log("clear");
-      setState({ typeingMessage: {} });
-    },
+      setState({ 
+        typeingMessage: { content: '' },
+        is: { ...state.is, typeing: false }
+      });
+    }, 
     async sendMessage() {
       const { typeingMessage, options, chat, is, currentChat } = state;
       if (typeingMessage?.content) {
@@ -125,14 +127,17 @@ export default function action(state, dispatch) {
     setMessage(content) {
       const typeingMessage =
         content === ""
-          ? {}
+          ? { content: '' }
           : {
               role: "user",
               content,
               id: Date.now(),
             };
-      setState({ is: { ...state.is, typeing: true }, typeingMessage });
-    },
+      setState({ 
+        is: { ...state.is, typeing: content !== '' }, 
+        typeingMessage 
+      });
+    },   
 
     clearMessage() {
       const chat = [...state.chat];

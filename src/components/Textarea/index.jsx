@@ -1,4 +1,4 @@
-import React, { forwardRef, useState } from 'react'
+import React, { forwardRef, useEffect, useState } from 'react'
 import { classnames } from '../utils';
 import Proptypes from 'prop-types'
 import { Button } from '../Button';
@@ -20,13 +20,12 @@ export const Textarea = forwardRef((props, ref) => {
     onClear,
     ...rest
   } = props;
-  const [content, setContent] = useState(value);
-  const [height, setHeight] = useState('auto')
+
+  const [height, setHeight] = useState('auto');
 
   function handleChange(event) {
     setHeight('auto');
     setHeight(`${event.target.scrollHeight}px`);
-    setContent(event.target.value);
     onChange && onChange(event.target.value);
   }
 
@@ -40,10 +39,17 @@ export const Textarea = forwardRef((props, ref) => {
       event.preventDefault();
     }
     if (event.shiftKey && event.key === "Enter") {
-      setContent(content + "\n");
+      onChange && onChange(value + "\n");
       event.preventDefault();
     }
   }
+
+  // Update height when value changes
+  useEffect(() => {
+    if (ref?.current) {
+      setHeight(`${ref.current.scrollHeight}px`);
+    }
+  }, [value]);
 
   return (
     <div className={classnames(styles.textarea_box, className)}>
@@ -56,7 +62,7 @@ export const Textarea = forwardRef((props, ref) => {
           placeholder={placeholder}
           onKeyDown={handleKeyPress}
           className={classnames(styles.textarea, transparent && styles.transparent)}
-          value={content}
+          value={value || ''}
           {...rest}
         />
       </div>
