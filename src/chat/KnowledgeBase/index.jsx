@@ -4,6 +4,7 @@ import styles from './knowledge.module.less';
 import { classnames } from '../../components/utils';
 import { Icon, Button, Title } from '../../components';
 import { uploadFiles } from '../service/api';
+import { IncidentData } from './IncidentData';
 
 export function FileList({ files }) {
   return (
@@ -55,36 +56,43 @@ export function KnowledgeBase() {
 
   return (
     <div className={styles.knowledge}>
-      <div {...getRootProps()} className={classnames(styles.dropzone, isDragActive && styles.active)}>
-        <input {...getInputProps()} />
-        <Icon type="file" className={styles.uploadIcon} />
-        <p>Drag & drop files here, or click to select files</p>
-      </div>
-      <FileList files={files} />
-      {files.length > 0 && (
-        <Button 
-          type="primary" 
-          onClick={handleUpload} 
-          disabled={uploading}
-          block
-        >
-          {uploading ? 'Uploading...' : 'Upload Files'}
-        </Button>
-      )}
-      
-      {uploadedDocs.length > 0 && (
-        <div className={styles.uploadedDocs}>
-          <Title type="h3">Added Documents:</Title>
-          <ul className={styles.docsList}>
-            {uploadedDocs.map((doc, index) => (
-              <li key={index} className={styles.docItem}>
-                <Icon type="file" className={styles.docIcon} />
-                <span>{doc}</span>
-              </li>
-            ))}
-          </ul>
+      <div className={styles.addSection}>
+        <Title type="h2" className={styles.mainTitle}>Add Incident Data</Title>
+        <div {...getRootProps()} className={classnames(styles.dropzone, isDragActive && styles.active)}>
+          <input {...getInputProps()} />
+          <Icon type="file" className={styles.uploadIcon} />
+          <p>Drag & drop files here, or click to select files</p>
         </div>
-      )}
+        <FileList files={files} />
+        {files.length > 0 && (
+          <Button 
+            type="primary" 
+            onClick={handleUpload} 
+            disabled={uploading}
+            block
+          >
+            {uploading ? 'Uploading...' : 'Upload Files'}
+          </Button>
+        )}
+        
+        {uploadedDocs.length > 0 && (
+          <div className={styles.uploadedDocs}>
+            <Title type="h3">Added Documents:</Title>
+            <ul className={styles.docsList}>
+              {uploadedDocs.map((doc, index) => (
+                <li key={index} className={styles.docItem}>
+                  <Icon type="file" className={styles.docIcon} />
+                  <span>{doc}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      <div className={styles.dataSection}>
+        <IncidentData />
+      </div>
     </div>
   );
 }

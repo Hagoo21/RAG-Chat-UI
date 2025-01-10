@@ -2,6 +2,27 @@
   height: 100%;
   padding: var(--spacing);
   background-color: var(--background-color);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+}
+
+.mainTitle {
+  margin-bottom: var(--spacing);
+  font-size: calc(var(--font-size-base) * 1.5);
+  font-weight: bold;
+}
+
+.addSection {
+  background-color: var(--background-color);
+  padding: var(--spacing);
+  border-radius: var(--border-radius);
+  border: 1px solid var(--border-color);
+}
+
+.dataSection {
+  flex: 1;
+  overflow-y: auto;
 }
 
 .uploadedDocs {
@@ -101,7 +122,7 @@
 
 .fileInfo {
   flex: 1;
-  min-width: 0; // Required for text truncation
+  min-width: 0;
 }
 
 .fileName {
@@ -115,4 +136,54 @@
 .fileSize {
   font-size: 12px;
   color: var(--text-color-gray);
+}
+
+.incidents {
+  margin-top: var(--spacing);
+  padding: var(--spacing);
+  border-radius: var(--border-radius);
+  background-color: var(--background-color-gray);
+  border: 1px solid var(--border-color);
+}
+
+.incidentsTitle {
+  margin-bottom: var(--spacing);
+  font-size: var(--font-size-h3);
+  font-weight: bold;
+}
+
+.incidentsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing);
+}
+
+.incidentItem {
+  padding: var(--spacing);
+  background-color: var(--background-color);
+  border-radius: var(--border-radius);
+  border: 1px solid var(--border-color);
+}
+
+.incidentContent {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing-min) / 2);
+}
+
+.incidentText {
+  font-size: var(--font-size-base);
+}
+
+.incidentMeta {
+  font-size: calc(var(--font-size-base) * 0.9);
+  color: var(--text-color-gray);
+}
+
+.error {
+  color: var(--red);
+  padding: var(--spacing);
+  border: 1px solid var(--red);
+  border-radius: var(--border-radius);
+  background-color: var(--error-background-color);
 }

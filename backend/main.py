@@ -17,10 +17,10 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS middleware
+# CORS middleware - Update to allow specific origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:8080"],  # Update this to match your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,7 +34,7 @@ ATLAS_VECTOR_SEARCH_INDEX_NAME = "Vector-Search"
 MONGODB_COLLECTION = db_client[DB_NAME][COLLECTION_NAME]
 
 # OpenAI setup
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 embedding_model = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
 
 # Vector store setup
@@ -45,63 +45,82 @@ vectorstore = MongoDBAtlasVectorSearch(
     relevance_score_fn="cosine",
 )
 
-@app.post("/upload")
-async def upload_documents(files: List[UploadFile]):
+
+@app.get("/incidents")
+async def get_incidents():
     try:
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=50
-        )
-        
-        for file in files:
-            content = await file.read()
-            text = content.decode()
-            
-            # Create document chunks
-            chunks = text_splitter.split_text(text)
-            documents = [Document(page_content=chunk, metadata={"filename": file.filename}) for chunk in chunks]
-            
-            # Create embeddings and store in MongoDB
-            embedded_chunks = [{
-                "content": doc.page_content,
-                "embedding": embedding_model.embed_query(doc.page_content),
-                "metadata": doc.metadata
-            } for doc in documents]
-            
-            MONGODB_COLLECTION.insert_many(embedded_chunks)
-            
-        return {"message": "Documents uploaded and processed successfully"}
+        # Fetch all documents from the collection
+        incidents = list(MONGODB_COLLECTION.find({}, {'_id': 0}))
+        if not incidents:
+            return []
+        return incidents
     except Exception as e:
+        print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat")
-async def chat_endpoint(request: dict):
-    try:
-        user_input = request.get("message")
-        if not user_input:
-            raise HTTPException(status_code=400, detail="Message is required")
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
-        # Get relevant documents
-        retriever = vectorstore.as_retriever(search_type='similarity', search_kwargs={'k': 5})
-        relevant_docs = retriever.get_relevant_documents(user_input)
-        context = ". ".join([doc.page_content for doc in relevant_docs])
 
-        # Create chat completion
-        system_message = """You are an assistant whose work is to review the context data and provide appropriate answers from the context. 
-        Answer only using the context provided. If the answer is not found in the context, respond "I don't know"."""
+
+# @app.post("/upload")
+# async def upload_documents(files: List[UploadFile]):
+#     try:
+#         text_splitter = RecursiveCharacterTextSplitter(
+#             chunk_size=1000,
+#             chunk_overlap=50
+#         )
         
-        response = openai_client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": f"Context: {context}\n\nQuestion: {user_input}"}
-            ],
-            temperature=0
-        )
+#         for file in files:
+#             content = await file.read()
+#             text = content.decode()
+            
+#             # Create document chunks
+#             chunks = text_splitter.split_text(text)
+#             documents = [Document(page_content=chunk, metadata={"filename": file.filename}) for chunk in chunks]
+            
+#             # Create embeddings and store in MongoDB
+#             embedded_chunks = [{
+#                 "content": doc.page_content,
+#                 "embedding": embedding_model.embed_query(doc.page_content),
+#                 "metadata": doc.metadata
+#             } for doc in documents]
+            
+#             MONGODB_COLLECTION.insert_many(embedded_chunks)
+            
+#         return {"message": "Documents uploaded and processed successfully"}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-        return {
-            "answer": response.choices[0].message.content.strip(),
-            "context": [doc.page_content for doc in relevant_docs]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.post("/chat")
+# async def chat_endpoint(request: dict):
+#     try:
+#         user_input = request.get("message")
+#         if not user_input:
+#             raise HTTPException(status_code=400, detail="Message is required")
+
+#         # Get relevant documents
+#         retriever = vectorstore.as_retriever(search_type='similarity', search_kwargs={'k': 5})
+#         relevant_docs = retriever.get_relevant_documents(user_input)
+#         context = ". ".join([doc.page_content for doc in relevant_docs])
+
+#         # Create chat completion
+#         system_message = """You are an assistant whose work is to review the context data and provide appropriate answers from the context. 
+#         Answer only using the context provided. If the answer is not found in the context, respond "I don't know"."""
+        
+#         response = openai_client.chat.completions.create(
+#             model="gpt-4",
+#             messages=[
+#                 {"role": "system", "content": system_message},
+#                 {"role": "user", "content": f"Context: {context}\n\nQuestion: {user_input}"}
+#             ],
+#             temperature=0
+#         )
+
+#         return {
+#             "answer": response.choices[0].message.content.strip(),
+#             "context": [doc.page_content for doc in relevant_docs]
+#         }
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))

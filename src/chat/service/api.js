@@ -1,4 +1,6 @@
-export const API_URL = 'http://localhost:8000';
+export const API_URL = process.env.NODE_ENV === 'production' 
+  ? '/api' 
+  : 'http://localhost:8080';
 
 export async function uploadFiles(files) {
   const formData = new FormData();
@@ -24,24 +26,23 @@ export async function uploadFiles(files) {
   }
 }
 
-export async function sendMessage(message) {
+export async function getIncidents() {
   try {
-    const response = await fetch(`${API_URL}/chat`, {
-      method: 'POST',
+    const response = await fetch(`${API_URL}/incidents`, {
+      method: 'GET',
       headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ message })
+        'Accept': 'application/json',
+      }
     });
-
+    
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || 'Chat request failed');
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return response.json();
+    const data = await response.json();
+    return data;
   } catch (error) {
-    console.error('Chat error:', error);
-    throw error;
+    console.error('Fetch incidents error:', error);
+    throw new Error('Failed to fetch incidents. Please ensure the backend server is running.');
   }
 }
