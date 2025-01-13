@@ -1,6 +1,8 @@
 export const API_URL = process.env.NODE_ENV === 'production' 
   ? '/api' 
-  : 'http://localhost:8080';
+  : 'http://localhost:8000';
+
+
 
 export async function uploadFiles(files) {
   const formData = new FormData();
@@ -43,6 +45,6 @@ export async function getIncidents() {
     return data;
   } catch (error) {
     console.error('Fetch incidents error:', error);
-    throw new Error('Failed to fetch incidents. Please ensure the backend server is running.');
+    throw new Error('Failed to fetch incidents.');
   }
 }
