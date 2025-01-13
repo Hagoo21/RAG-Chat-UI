@@ -6,6 +6,32 @@ export default function action(state, dispatch) {
       type: "SET_STATE",
       payload: { ...payload },
     });
+
+  const ensureValidChatState = () => {
+    if (!state.chat || !Array.isArray(state.chat) || state.chat.length === 0) {
+      // Initialize with a default chat if invalid
+      setState({
+        chat: [{
+          title: "Welcome",
+          id: Date.now(),
+          ct: new Date().toISOString(),
+          messages: [],
+          icon: [2, "files"],
+        }],
+        currentChat: 0
+      });
+      return false;
+    }
+    
+    // Ensure currentChat is valid
+    if (state.currentChat >= state.chat.length) {
+      setState({ currentChat: state.chat.length - 1 });
+      return false;
+    }
+    
+    return true;
+  };
+
   return {
     setState,
     clearTypeing() {
@@ -15,72 +41,76 @@ export default function action(state, dispatch) {
       });
     }, 
     async sendMessage() {
+      if (!ensureValidChatState()) return;
+
       const { typeingMessage, options, chat, is, currentChat } = state;
-      if (typeingMessage?.content) {
-        const newMessage = {
-          ...typeingMessage,
-          sentTime: Date.now(),
-        };
-        const messages = [...chat[currentChat].messages, newMessage];
-        let newChat = [...chat];
-        newChat.splice(currentChat, 1, { ...chat[currentChat], messages });
-        setState({
-          is: { ...is, thinking: true },
-          typeingMessage: {},
-          chat: newChat,
-        });
-        const controller = new AbortController();
-        try {
-          const res = await fetchStream({
-            messages: messages.map((item) => {
-              const { sentTime, id, ...rest } = item;
-              return { ...rest };
-            }),
-            options: options.openai,
-            signal: controller.signal,
-            onMessage(content) {
-              newChat.splice(currentChat, 1, {
+      if (!typeingMessage?.content) return;
+
+      const newMessage = {
+        ...typeingMessage,
+        sentTime: Date.now(),
+      };
+      const messages = [...(chat[currentChat].messages || []), newMessage];
+      let newChat = [...chat];
+      newChat[currentChat] = { ...chat[currentChat], messages };
+
+      setState({
+        is: { ...is, thinking: true },
+        typeingMessage: { content: '' },
+        chat: newChat,
+      });
+
+      const controller = new AbortController();
+      try {
+        await fetchStream({
+          messages: messages.map(({ sentTime, id, ...rest }) => rest),
+          options: options.openai,
+          signal: controller.signal,
+          onMessage(content) {
+            if (!newChat[currentChat]) return;
+            newChat[currentChat] = {
+              ...chat[currentChat],
+              messages: [
+                ...messages,
+                {
+                  content,
+                  role: "assistant",
+                  sentTime: Date.now(),
+                  id: Date.now(),
+                },
+              ],
+            };
+            setState({
+              is: { ...is, thinking: content.length },
+              chat: newChat,
+            });
+          },
+          onStar() {},
+          onEnd() {
+            setState({
+              is: { ...is, thinking: false },
+            });
+          },
+          onError(res) {
+            console.error('Stream error:', res);
+            const { error } = res || {};
+            if (error && newChat[currentChat]) {
+              newChat[currentChat] = {
                 ...chat[currentChat],
-                messages: [
-                  ...messages,
-                  {
-                    content,
-                    role: "assistant",
-                    sentTime: Date.now(),
-                    id: Date.now(),
-                  },
-                ],
-              });
+                error,
+              };
               setState({
-                is: { ...is, thinking: content.length },
                 chat: newChat,
-              });
-            },
-            onStar() {},
-            onEnd() {
-              setState({
                 is: { ...is, thinking: false },
               });
-            },
-            onError(res) {
-              console.log(res);
-              const { error } = res || {};
-              if (error) {
-                newChat.splice(currentChat, 1, {
-                  ...chat[currentChat],
-                  error,
-                });
-                setState({
-                  chat: newChat,
-                  is: { ...is, thinking: false },
-                });
-              }
-            },
-          });
-          console.log(res);
-        } catch (error) {
-          console.log(error);
-        }
+            }
+          },
+        });
+      } catch (error) {
+        console.error('Send message error:', error);
+        setState({
+          is: { ...is, thinking: false },
+        });
       }
     },
 
@@ -89,10 +119,10 @@ export default function action(state, dispatch) {
       const chatList = [
         ...chat,
         {
-          title: "This is a New Conversations",
+          title: "New Conversation",
           id: Date.now(),
           messages: [],
-          ct: Date.now(),
+          ct: new Date().toISOString(),
           icon: [2, "files"],
         },
       ];
@@ -100,39 +130,47 @@ export default function action(state, dispatch) {
     },
 
     modifyChat(arg, index) {
+      if (!ensureValidChatState()) return;
       const chat = [...state.chat];
-      chat.splice(index, 1, { ...chat[index], ...arg });
+      chat[index] = { ...chat[index], ...arg };
       setState({ chat, currentEditor: null });
     },
 
     editChat(index, title) {
+      if (!ensureValidChatState()) return;
       const chat = [...state.chat];
-      chat.splice(index, 1, [...chat[index], title]);
-      setState({
-        chat,
-      });
+      chat[index] = { ...chat[index], title };
+      setState({ chat });
     },
+    
     removeChat(index) {
+      if (!ensureValidChatState()) return;
       const chat = [...state.chat];
       chat.splice(index, 1);
-      const payload =
-        state.currentChat === index
-          ? { chat, currentChat: index - 1 }
-          : { chat };
+      
+      // Ensure at least one chat remains
+      if (chat.length === 0) {
+        chat.push({
+          title: "New Conversation",
+          id: Date.now(),
+          messages: [],
+          ct: new Date().toISOString(),
+          icon: [2, "files"],
+        });
+      }
+      
       setState({
-        ...payload,
+        chat,
+        currentChat: state.currentChat === index ? Math.max(0, index - 1) : state.currentChat
       });
     },
 
     setMessage(content) {
-      const typeingMessage =
-        content === ""
-          ? { content: '' }
-          : {
-              role: "user",
-              content,
-              id: Date.now(),
-            };
+      const typeingMessage = content === "" ? { content: '' } : {
+        role: "user",
+        content,
+        id: Date.now(),
+      };
       setState({ 
         is: { ...state.is, typeing: content !== '' }, 
         typeingMessage 
@@ -140,37 +178,35 @@ export default function action(state, dispatch) {
     },   
 
     clearMessage() {
+      if (!ensureValidChatState()) return;
       const chat = [...state.chat];
-      chat[state.currentChat].messages = [];
-      setState({
-        chat,
-      });
+      chat[state.currentChat] = { ...chat[state.currentChat], messages: [] };
+      setState({ chat });
     },
 
     removeMessage(index) {
-      const messages = state.chat[state.currentChat].messages;
+      if (!ensureValidChatState()) return;
       const chat = [...state.chat];
+      const messages = [...chat[state.currentChat].messages];
       messages.splice(index, 1);
-      chat[state.currentChat].messages = messages;
-      setState({
-        chat,
-      });
+      chat[state.currentChat] = { ...chat[state.currentChat], messages };
+      setState({ chat });
     },
 
     setOptions({ type, data = {} }) {
-      console.log(type, data);
-      let options = { ...state.options };
-      options[type] = { ...options[type], ...data };
+      const options = { 
+        ...state.options,
+        [type]: { ...state.options[type], ...data }
+      };
       setState({ options });
     },
 
     setIs(arg) {
-      const { is } = state;
-      setState({ is: { ...is, ...arg } });
+      setState({ is: { ...state.is, ...arg } });
     },
 
     currentList() {
-      return state.chat[state.currentChat];
+      return ensureValidChatState() ? state.chat[state.currentChat] : null;
     },
 
     stopResonse() {
@@ -180,26 +216,3 @@ export default function action(state, dispatch) {
     },
   };
 }
-
-export const datas = {
-  id: "chatcmpl-7AEK9Dlw96m5TejBKIKUgjyUHVTCa",
-  object: "chat.completion",
-  created: 1682672697,
-  model: "gpt-3.5-turbo-0301",
-  usage: {
-    prompt_tokens: 34,
-    completion_tokens: 303,
-    total_tokens: 337,
-  },
-  choices: [
-    {
-      message: {
-        role: "assistant",
-        content:
-          '好的，以下是一个简单的useKeyboard hooks。\n\n```jsx\nimport { useState, useEffect } from "react"; \n\nexport default function useKeyboard(targetKey) { \n  const [keyPressed, setKeyPressed] = useState(false); \n  \n  const downHandler = ({ key }) => {\n    if (key === targetKey) {\n      setKeyPressed(true); \n    } \n  }; \n  \n  const upHandler = ({ key }) => { \n    if (key === targetKey) { \n      setKeyPressed(false); \n    } \n  }; \n\n  useEffect(() => { \n    window.addEventListener("keydown", downHandler); \n    window.addEventListener("keyup", upHandler); \n    \n    return () => { \n      window.removeEventListener("keydown", downHandler); \n      window.removeEventListener("keyup", upHandler); \n    }; \n  }, []); \n\n  return keyPressed; \n}\n```\n\n这个hook将传递给它的按键(targetKey)与键盘按下事件进行比较。如果按键与传递进来的按键相同，那么hook的返回值(keyPressed)将被设置为true。否则，返回值为false。这个hook使用了React的useState和useEffect钩子函数。在useEffect中，我们添加按键按下和松开事件的监听器。当组件卸载时，我们移除这些监听器。',
-      },
-      finish_reason: "stop",
-      index: 0,
-    },
-  ],
-};

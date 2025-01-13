@@ -1,22 +1,21 @@
-import React from 'react'
-import { Avatar, Icon, Textarea, Loading, Tooltip, Button, Popover } from '@/components'
-import { CopyIcon, ScrollView, Error, EmptyChat, ChatHelp } from './component'
-import { MessageRender } from './MessageRender'
-import { ConfigInfo } from './ConfigInfo'
-import { useGlobal } from './context'
-import { useMesssage, useSendKey, useOptions } from './hooks'
-import { dateFormat } from './utils'
-import { sendMessage } from './service/api'
-import avatar from '@/assets/images/avatar-gpt.png'
-import styles from './style/message.module.less'
-import { classnames } from '../components/utils'
+import React from 'react';
+import { Avatar, Icon, Textarea, Loading, Tooltip, Button, Popover } from '@/components';
+import { CopyIcon, ScrollView, Error, EmptyChat, ChatHelp, AudioRecorder} from './component';
+import { MessageRender } from './MessageRender';
+import { ConfigInfo } from './ConfigInfo';
+import { useGlobal } from './context';
+import { useMesssage, useSendKey, useOptions } from './hooks';
+import { dateFormat } from './utils';
+import avatar from '@/assets/images/avatar-gpt.png';
+import styles from './style/message.module.less';
+import { classnames } from '../components/utils';
 
 export function MessageHeader() {
-  const { is, setIs, clearMessage, options } = useGlobal()
-  const { message } = useMesssage()
-  const { messages = [] } = message || {}
-  const columnIcon = is.sidebar ? 'column-close' : 'column-open'
-  const { setGeneral } = useOptions()
+  const { is, setIs, clearMessage, options } = useGlobal();
+  const { message } = useMesssage();
+  const { messages = [] } = message || {};
+  const columnIcon = is.sidebar ? 'column-close' : 'column-open';
+  const { setGeneral } = useOptions();
 
   return (
     <div className={classnames(styles.header)}>
@@ -33,12 +32,12 @@ export function MessageHeader() {
         </Popover>
       </div>
     </div>
-  )
+  );
 }
 
 export function MessageItem(props) {
-  const { content, sentTime, role } = props
-  const { removeMessage } = useGlobal()
+  const { content, sentTime, role } = props;
+  const { removeMessage } = useGlobal();
   return (
     <div className={classnames(styles.item, styles[role])}>
       <Avatar src={role !== 'user' && avatar} />
@@ -62,12 +61,16 @@ export function MessageItem(props) {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 export function MessageBar() {
-  const { sendMessage, setMessage, is, options, setIs, typeingMessage, clearTypeing, stopResonse } = useGlobal()
-  useSendKey(sendMessage, options.general.command)
+  const { sendMessage, setMessage, is, options, setIs, typeingMessage, clearTypeing, stopResonse } = useGlobal();
+  useSendKey(sendMessage, options.general.command);
+
+  const handleTranscription = (text) => {
+    setMessage(text);
+  };
 
   return (
     <div className={styles.bar}>
@@ -94,20 +97,20 @@ export function MessageBar() {
             <Tooltip text="clear">
               <Icon className={styles.icon} type="cancel" onClick={clearTypeing} />
             </Tooltip>}
-          <Tooltip text="voice input">
-            <Icon className={styles.icon} type="mic" />
+          <Tooltip text="Voice input">
+            <AudioRecorder onTranscription={handleTranscription} />
           </Tooltip>
           <Icon className={styles.icon} type="send" onClick={sendMessage} />
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 export function MessageContainer() {
-  const { options } = useGlobal()
-  const { message } = useMesssage()
-  const { messages = [] } = message || {}
+  const { options } = useGlobal();
+  const { message } = useMesssage();
+  const { messages = [] } = message || {};
   
   if (options?.openai?.apiKey) {
     return (
@@ -120,14 +123,14 @@ export function MessageContainer() {
           <ChatHelp />
         }
       </React.Fragment>
-    )
+    );
   } else {
-    return <EmptyChat />
+    return <EmptyChat />;
   }
 }
 
 export function ChatMessage() {
-  const { is } = useGlobal()
+  const { is } = useGlobal();
   return (
     <React.Fragment>
       <div className={styles.message}>
@@ -139,5 +142,5 @@ export function ChatMessage() {
         <MessageBar />
       </div>
     </React.Fragment>
-  )
+  );
 }

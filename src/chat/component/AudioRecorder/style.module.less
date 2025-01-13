@@ -1,0 +1,38 @@
+.recorder {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  
+    :global {
+      .audio-recorder {
+        opacity: 0;
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+      }
+    }
+  }
+  
+  .icon {
+    color: var(--text-color);
+    transition: color 0.3s ease;
+    
+    &.recording {
+      color: var(--red);
+      animation: pulse 1.5s infinite;
+    }
+  }
+  
+  @keyframes pulse {
+    0% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
