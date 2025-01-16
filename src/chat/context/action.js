@@ -1,4 +1,5 @@
 import { fetchStream } from "../service";
+import { getContext } from "../service/api";
 
 export default function action(state, dispatch) {
   const setState = (payload = {}) =>
@@ -42,28 +43,53 @@ export default function action(state, dispatch) {
     }, 
     async sendMessage() {
       if (!ensureValidChatState()) return;
-
+    
       const { typeingMessage, options, chat, is, currentChat } = state;
       if (!typeingMessage?.content) return;
-
-      const newMessage = {
-        ...typeingMessage,
-        sentTime: Date.now(),
-      };
-      const messages = [...(chat[currentChat].messages || []), newMessage];
-      let newChat = [...chat];
-      newChat[currentChat] = { ...chat[currentChat], messages };
-
-      setState({
-        is: { ...is, thinking: true },
-        typeingMessage: { content: '' },
-        chat: newChat,
-      });
-
-      const controller = new AbortController();
+    
       try {
+        // Get context from the /chat endpoint
+        const contextResponse = await getContext(typeingMessage.content);
+        console.log('Context received:', contextResponse); // Debug log
+        
+        // Extract context from the response
+        const context = contextResponse.context;
+        
+        // Create message with context
+        const messageWithContext = `Context: ${context}\n\nQuestion: ${typeingMessage.content}`;
+        console.log('Message with context:', messageWithContext); // Debug log
+    
+        // Store the original message in chat history (without context)
+        const messages = [...(chat[currentChat].messages || []), {
+          ...typeingMessage,
+          sentTime: Date.now()
+        }];
+    
+        let newChat = [...chat];
+        newChat[currentChat] = { ...chat[currentChat], messages };
+    
+        setState({
+          is: { ...is, thinking: true },
+          typeingMessage: { content: '' },
+          chat: newChat,
+        });
+    
+        const controller = new AbortController();
+    
         await fetchStream({
-          messages: messages.map(({ sentTime, id, ...rest }) => rest),
+          messages: messages.map((msg, index) => {
+            // Replace the last message with our context-enhanced version
+            if (index === messages.length - 1) {
+              return {
+                role: msg.role,
+                content: messageWithContext // Use the enhanced message with context
+              };
+            }
+            return {
+              role: msg.role,
+              content: msg.content
+            };
+          }),
           options: options.openai,
           signal: controller.signal,
           onMessage(content) {
@@ -77,7 +103,7 @@ export default function action(state, dispatch) {
                   role: "assistant",
                   sentTime: Date.now(),
                   id: Date.now(),
-                },
+          },
               ],
             };
             setState({
@@ -112,7 +138,9 @@ export default function action(state, dispatch) {
           is: { ...is, thinking: false },
         });
       }
-    },
+    }
+    ,
+    
 
     newChat() {
       const { chat } = state;

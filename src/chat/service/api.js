@@ -48,3 +48,27 @@ export async function getIncidents() {
     throw new Error('Failed to fetch incidents.');
   }
 }
+
+export async function getContext(message) {
+  try {
+    const response = await fetch(`${API_URL}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ message })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('Context API response:', data); // Debug log
+    return data; // Should return { context: "..." }
+  } catch (error) {
+    console.error('Chat context error:', error);
+    throw new Error('Failed to fetch chat context.');
+  }
+}

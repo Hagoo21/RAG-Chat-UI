@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import os
-from typing import List
+from typing import List, Dict
 import json
 from openai import OpenAI
 from pymongo import MongoClient
@@ -18,6 +18,10 @@ import fitz  # PyMuPDF
 import io
 import base64
 from datetime import datetime
+from pydantic import BaseModel
+
+class MessageRequest(BaseModel):
+    message: str
 
 
 load_dotenv()
@@ -37,7 +41,7 @@ app.add_middleware(
 db_client = MongoClient(os.getenv("MONGODB_URI"), server_api=ServerApi('1'))
 DB_NAME = "ChatMIM"
 COLLECTION_NAME = "Incidents"
-ATLAS_VECTOR_SEARCH_INDEX_NAME = "Vector-Search"
+ATLAS_VECTOR_SEARCH_INDEX_NAME = "vector_search_index"
 MONGODB_COLLECTION = db_client[DB_NAME][COLLECTION_NAME]
 
 # OpenAI setup
@@ -157,7 +161,7 @@ async def upload_documents(files: List[UploadFile]):
             
             # Create embeddings and store in MongoDB
             embedded_chunks = [{
-                "content": doc.page_content,
+                "text": doc.page_content,
                 "embedding": embedding_model.embed_query(doc.page_content),
                 "metadata": doc.metadata
             } for doc in documents]
@@ -171,6 +175,20 @@ async def upload_documents(files: List[UploadFile]):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/chat", response_model=Dict[str, str])
+async def search_context(request: MessageRequest):
+    """
+    Searches for relevant contexts using cosine similarity.
+    """
+    try:
+        docs = vectorstore.similarity_search(request.message, k=5)
+        contexts = [doc.page_content for doc in docs]
+        concatenated_context = " ".join(contexts)
+        print(f"Contexts: {concatenated_context}")
+        return {"context": concatenated_context}
+    except Exception as e:
+        print(f"Error during search: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # @app.post("/chat")
 # async def chat_endpoint(request: dict):
 #     try:
