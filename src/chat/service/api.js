@@ -1,5 +1,5 @@
 export const API_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://chat-mim-backend.onrender.com'  // Update this with your backend URL after deployment
+  ? 'rag-chat-ui-backend:10000'  // render deployed backend address (prod)
   : 'http://localhost:8000';
 
 export async function uploadFiles(files) {
