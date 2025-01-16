@@ -8,11 +8,6 @@ import json
 from openai import OpenAI
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch
-from langchain_openai import OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
-
 from PIL import Image
 import fitz  # PyMuPDF
 import io
@@ -27,10 +22,10 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS middleware - Update to allow specific origins
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://adorable-macaron-2074b9.netlify.app", "http://localhost:8080"],  # Update with your frontend URL
+    allow_origins=["https://adorable-macaron-2074b9.netlify.app", "http://localhost:8080"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,20 +35,10 @@ app.add_middleware(
 db_client = MongoClient(os.getenv("MONGODB_URI"), server_api=ServerApi('1'))
 DB_NAME = "ChatMIM"
 COLLECTION_NAME = "Incidents"
-ATLAS_VECTOR_SEARCH_INDEX_NAME = "vector_search_index"
 MONGODB_COLLECTION = db_client[DB_NAME][COLLECTION_NAME]
 
 # OpenAI setup
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-embedding_model = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
-
-# Vector store setup
-vectorstore = MongoDBAtlasVectorSearch(
-    collection=MONGODB_COLLECTION,
-    embedding=embedding_model,
-    index_name=ATLAS_VECTOR_SEARCH_INDEX_NAME,
-    relevance_score_fn="cosine",
-)
 
 @app.get("/health")
 async def health_check():
@@ -84,10 +69,7 @@ async def get_incidents():
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile]):
     try:
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=50
-        )
+        uploaded_docs = []
         
         for file in files:
             content = await file.read()
@@ -95,12 +77,12 @@ async def upload_documents(files: List[UploadFile]):
             
             # Generate preview image
             preview_image = None
+            text = ""
             
             if file_extension == 'pdf':
                 # Handle PDF files
                 pdf_document = fitz.open(stream=content, filetype="pdf")
                 # Extract text from PDF
-                text = ""
                 for page in pdf_document:
                     text += page.get_text()
                 
@@ -118,53 +100,41 @@ async def upload_documents(files: List[UploadFile]):
                     text = content.decode('utf-8')
                 except UnicodeDecodeError:
                     text = content.decode('latin-1')
-                preview_image = None  # No preview for text files
             
             elif file_extension in ['png', 'jpg', 'jpeg', 'gif']:
                 # Handle image files
                 try:
                     img = Image.open(io.BytesIO(content))
-                    # Resize image for preview
                     img.thumbnail((200, 200))
                     img_byte_arr = io.BytesIO()
                     img.save(img_byte_arr, format='PNG')
                     img_byte_arr = img_byte_arr.getvalue()
                     preview_image = base64.b64encode(img_byte_arr).decode()
-                    # For images, use OCR or just store filename as text
                     text = f"Image file: {file.filename}"
                 except Exception as e:
                     print(f"Error processing image: {str(e)}")
                     text = f"Image file: {file.filename}"
-            
             else:
-                # Unsupported file type
                 raise HTTPException(
                     status_code=400, 
                     detail=f"Unsupported file type: {file_extension}"
                 )
-            
-            # Create document chunks
-            chunks = text_splitter.split_text(text)
-            documents = [Document(
-                page_content=chunk, 
-                metadata={
+
+            # Create document
+            document = {
+                "text": text,
+                "metadata": {
                     "filename": file.filename,
                     "preview_image": preview_image,
                     "file_type": file_extension,
                     "upload_timestamp": datetime.utcnow().isoformat(),
                     "file_size": len(content)
                 }
-            ) for chunk in chunks]
+            }
             
-            # Create embeddings and store in MongoDB
-            embedded_chunks = [{
-                "text": doc.page_content,
-                "embedding": embedding_model.embed_query(doc.page_content),
-                "metadata": doc.metadata
-            } for doc in documents]
-            
-            if embedded_chunks:  # Only insert if there are chunks to insert
-                MONGODB_COLLECTION.insert_many(embedded_chunks)
+            # Store in MongoDB
+            MONGODB_COLLECTION.insert_one(document)
+            uploaded_docs.append(document)
             
         return {"message": "Documents uploaded and processed successfully"}
     except Exception as e:
@@ -174,13 +144,18 @@ async def upload_documents(files: List[UploadFile]):
 @app.post("/chat")
 async def search_context(request: MessageRequest):
     """
-    Searches for relevant contexts using cosine similarity.
+    Searches for relevant contexts using text similarity.
     """
     try:
-        docs = vectorstore.similarity_search(request.message, k=5)
-        contexts = [doc.page_content for doc in docs]
-        concatenated_context = " ".join(contexts)
-        print(f"Contexts: {concatenated_context}")
+        # Simple text search in MongoDB
+        cursor = MONGODB_COLLECTION.find(
+            {"$text": {"$search": request.message}},
+            {"score": {"$meta": "textScore"}}
+        ).sort([("score", {"$meta": "textScore"})]).limit(5)
+        
+        contexts = [doc.get("text", "") for doc in cursor]
+        concatenated_context = " ".join(contexts) if contexts else "No relevant context found."
+        
         return {"context": concatenated_context}
     except Exception as e:
         print(f"Error during search: {e}")
