@@ -1,5 +1,5 @@
 export const API_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://rag-chat-ui-backend:10000'  // render deployed backend address (prod)
+  ? 'https://rag-chat-ui-backend.onrender.com'  // render deployed backend address (prod)
   : 'http://localhost:8000';
 
 export async function uploadFiles(files) {
