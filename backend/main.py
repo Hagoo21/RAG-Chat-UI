@@ -23,15 +23,14 @@ from pydantic import BaseModel
 class MessageRequest(BaseModel):
     message: str
 
-
 load_dotenv()
 
 app = FastAPI()
 
-# CORS middleware - Update to allow specific origin
+# CORS middleware - Update to allow specific origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080"],  # Update this to match your frontend URL
+    allow_origins=["https://adorable-macaron-2074b9.netlify.app", "http://localhost:8080"],  # Update with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,7 +54,6 @@ vectorstore = MongoDBAtlasVectorSearch(
     index_name=ATLAS_VECTOR_SEARCH_INDEX_NAME,
     relevance_score_fn="cosine",
 )
-
 
 @app.get("/health")
 async def health_check():
@@ -82,7 +80,6 @@ async def get_incidents():
             status_code=500, 
             detail=f"Database error: {str(e)}"
         )
-
 
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile]):
@@ -174,8 +171,7 @@ async def upload_documents(files: List[UploadFile]):
         print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/chat", response_model=Dict[str, str])
+@app.post("/chat")
 async def search_context(request: MessageRequest):
     """
     Searches for relevant contexts using cosine similarity.

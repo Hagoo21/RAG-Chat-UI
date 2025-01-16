@@ -1,8 +1,6 @@
 export const API_URL = process.env.NODE_ENV === 'production' 
-  ? '/api' 
+  ? 'https://chat-mim-backend.onrender.com'  // Update this with your backend URL after deployment
   : 'http://localhost:8000';
-
-
 
 export async function uploadFiles(files) {
   const formData = new FormData();
@@ -65,8 +63,8 @@ export async function getContext(message) {
     }
 
     const data = await response.json();
-    console.log('Context API response:', data); // Debug log
-    return data; // Should return { context: "..." }
+    console.log('Context API response:', data);
+    return data;
   } catch (error) {
     console.error('Chat context error:', error);
     throw new Error('Failed to fetch chat context.');
