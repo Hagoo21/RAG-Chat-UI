@@ -40,6 +40,32 @@ MONGODB_COLLECTION = db_client[DB_NAME][COLLECTION_NAME]
 # OpenAI setup
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+def create_text_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 50) -> List[str]:
+    """Split text into overlapping chunks."""
+    chunks = []
+    start = 0
+    text_length = len(text)
+    
+    while start < text_length:
+        end = start + chunk_size
+        # Handle the last chunk
+        if end >= text_length:
+            chunks.append(text[start:])
+            break
+        
+        # Find the last space before the end to avoid cutting words
+        last_space = text.rfind(' ', start, end)
+        if last_space != -1:
+            chunks.append(text[start:last_space])
+            start = last_space - chunk_overlap
+        else:
+            chunks.append(text[start:end])
+            start = end - chunk_overlap
+        
+        start = max(start, 0)  # Ensure start doesn't go negative
+    
+    return chunks
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
@@ -48,45 +74,31 @@ async def health_check():
 async def get_incidents():
     try:
         print("Attempting to connect to database...")
-        # First verify connection
         db_client.admin.command('ping')
         print("Successfully connected to database")
         
         print(f"Attempting to fetch incidents from {DB_NAME}.{COLLECTION_NAME}")
-        # Fetch all documents from the collection
         incidents = list(MONGODB_COLLECTION.find({}, {'_id': 0}))
         print(f"Found {len(incidents)} incidents")
-        if not incidents:
-            return []
-        return incidents
+        return incidents or []
     except Exception as e:
         print(f"Error fetching incidents: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Database error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile]):
     try:
-        uploaded_docs = []
-        
         for file in files:
             content = await file.read()
             file_extension = file.filename.lower().split('.')[-1]
-            
-            # Generate preview image
             preview_image = None
-            text = ""
             
             if file_extension == 'pdf':
-                # Handle PDF files
                 pdf_document = fitz.open(stream=content, filetype="pdf")
-                # Extract text from PDF
+                text = ""
                 for page in pdf_document:
                     text += page.get_text()
                 
-                # Generate preview from first page
                 if len(pdf_document) > 0:
                     first_page = pdf_document[0]
                     pix = first_page.get_pixmap(matrix=fitz.Matrix(1, 1))
@@ -95,14 +107,12 @@ async def upload_documents(files: List[UploadFile]):
                 pdf_document.close()
             
             elif file_extension in ['txt', 'csv', 'json']:
-                # Handle text files
                 try:
                     text = content.decode('utf-8')
                 except UnicodeDecodeError:
                     text = content.decode('latin-1')
             
             elif file_extension in ['png', 'jpg', 'jpeg', 'gif']:
-                # Handle image files
                 try:
                     img = Image.open(io.BytesIO(content))
                     img.thumbnail((200, 200))
@@ -114,80 +124,71 @@ async def upload_documents(files: List[UploadFile]):
                 except Exception as e:
                     print(f"Error processing image: {str(e)}")
                     text = f"Image file: {file.filename}"
-            else:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Unsupported file type: {file_extension}"
-                )
-
-            # Create document
-            document = {
-                "text": text,
-                "metadata": {
-                    "filename": file.filename,
-                    "preview_image": preview_image,
-                    "file_type": file_extension,
-                    "upload_timestamp": datetime.utcnow().isoformat(),
-                    "file_size": len(content)
-                }
-            }
             
-            # Store in MongoDB
-            MONGODB_COLLECTION.insert_one(document)
-            uploaded_docs.append(document)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
+            
+            # Create document chunks
+            chunks = create_text_chunks(text)
+            
+            # Create embeddings using OpenAI directly
+            embedded_chunks = []
+            for chunk in chunks:
+                embedding_response = openai_client.embeddings.create(
+                    model="text-embedding-ada-002",
+                    input=chunk
+                )
+                embedded_chunks.append({
+                    "text": chunk,
+                    "embedding": embedding_response.data[0].embedding,
+                    "metadata": {
+                        "filename": file.filename,
+                        "preview_image": preview_image,
+                        "file_type": file_extension,
+                        "upload_timestamp": datetime.utcnow().isoformat(),
+                        "file_size": len(content)
+                    }
+                })
+            
+            if embedded_chunks:
+                MONGODB_COLLECTION.insert_many(embedded_chunks)
             
         return {"message": "Documents uploaded and processed successfully"}
     except Exception as e:
         print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat")
+@app.post("/chat", response_model=Dict[str, str])
 async def search_context(request: MessageRequest):
     """
-    Searches for relevant contexts using text similarity.
+    Searches for relevant contexts using MongoDB Atlas Vector Search.
     """
     try:
-        # Simple text search in MongoDB
-        cursor = MONGODB_COLLECTION.find(
-            {"$text": {"$search": request.message}},
-            {"score": {"$meta": "textScore"}}
-        ).sort([("score", {"$meta": "textScore"})]).limit(5)
-        
-        contexts = [doc.get("text", "") for doc in cursor]
-        concatenated_context = " ".join(contexts) if contexts else "No relevant context found."
+        # Get embedding for the query
+        query_embedding_response = openai_client.embeddings.create(
+            model="text-embedding-ada-002",
+            input=request.message
+        )
+        query_embedding = query_embedding_response.data[0].embedding
+
+        # Perform vector search using MongoDB's $vectorSearch
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "vector_search_index",  # Make sure this matches your index name
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": 100,
+                    "limit": 5
+                }
+            }
+        ]
+
+        results = list(MONGODB_COLLECTION.aggregate(pipeline))
+        contexts = [doc["text"] for doc in results]
+        concatenated_context = " ".join(contexts)
         
         return {"context": concatenated_context}
     except Exception as e:
         print(f"Error during search: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-# @app.post("/chat")
-# async def chat_endpoint(request: dict):
-#     try:
-#         user_input = request.get("message")
-#         if not user_input:
-#             raise HTTPException(status_code=400, detail="Message is required")
-
-#         # Get relevant documents
-#         retriever = vectorstore.as_retriever(search_type='similarity', search_kwargs={'k': 5})
-#         relevant_docs = retriever.get_relevant_documents(user_input)
-#         context = ". ".join([doc.page_content for doc in relevant_docs])
-
-#         # Create chat completion
-#         system_message = """You are an assistant whose work is to review the context data and provide appropriate answers from the context. 
-#         Answer only using the context provided. If the answer is not found in the context, respond "I don't know"."""
-        
-#         response = openai_client.chat.completions.create(
-#             model="gpt-4",
-#             messages=[
-#                 {"role": "system", "content": system_message},
-#                 {"role": "user", "content": f"Context: {context}\n\nQuestion: {user_input}"}
-#             ],
-#             temperature=0
-#         )
-
-#         return {
-#             "answer": response.choices[0].message.content.strip(),
-#             "context": [doc.page_content for doc in relevant_docs]
-#         }
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
