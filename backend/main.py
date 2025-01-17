@@ -1,9 +1,9 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 import json
 from openai import OpenAI
 from pymongo import MongoClient
@@ -104,11 +104,51 @@ async def health_check():
         return {"status": "unhealthy", "error": str(e)}
 
 @app.get("/incidents")
-async def get_incidents():
+async def get_incidents(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=1000),
+    filename: Optional[str] = None
+):
     try:
         collection = mongodb_client[DB_NAME][COLLECTION_NAME]
-        incidents = list(collection.find({}, {'_id': 0}).limit(50))  # Limit results
-        return incidents or []
+        
+        # Create the query filter
+        query_filter = {}
+        if filename:
+            query_filter["metadata.filename"] = filename
+            
+        # First get unique filenames and their counts
+        pipeline = [
+            {"$group": {
+                "_id": "$metadata.filename",
+                "count": {"$sum": 1},
+                "preview_image": {"$first": "$metadata.preview_image"},
+                "file_type": {"$first": "$metadata.file_type"},
+                "upload_timestamp": {"$first": "$metadata.upload_timestamp"}
+            }}
+        ]
+        
+        file_stats = list(collection.aggregate(pipeline))
+        
+        # Get the actual embeddings with pagination
+        cursor = collection.find(
+            query_filter,
+            {'_id': 0}
+        ).skip(skip).limit(limit)
+        
+        incidents = list(cursor)
+        
+        # Get total count
+        total_count = collection.count_documents(query_filter)
+        
+        return {
+            "total": total_count,
+            "file_stats": file_stats,
+            "incidents": incidents,
+            "skip": skip,
+            "limit": limit,
+            "has_more": (skip + limit) < total_count
+        }
     except Exception as e:
         print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
