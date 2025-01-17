@@ -40,10 +40,41 @@ export const throwError = async (response) => {
   }
 };
 
+// Helper function to count tokens (rough estimate)
+const estimateTokenCount = (text) => {
+  // Rough estimate: 1 token ≈ 4 characters for English text
+  return Math.ceil(text.length / 4);
+};
+
+// Function to limit context window
+const limitContextWindow = (messages, maxTokens = 4000) => {
+  let totalTokens = 0;
+  const limitedMessages = [];
+  
+  // Process messages in reverse to keep most recent context
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    const estimatedTokens = estimateTokenCount(message.content);
+    
+    if (totalTokens + estimatedTokens <= maxTokens) {
+      limitedMessages.unshift(message);
+      totalTokens += estimatedTokens;
+    } else {
+      break;
+    }
+  }
+  
+  return limitedMessages;
+};
+
 export const fetchBody = ({ options = {}, messages = [] }) => {
   const { top_p, n, max_tokens, temperature, model, stream } = options;
+  
+  // Limit context window to prevent rate limit errors
+  const limitedMessages = limitContextWindow(messages);
+  
   return {
-    messages,
+    messages: limitedMessages,
     stream,
     n: 1,
     ...(model && { model }),
@@ -83,46 +114,46 @@ export const fetchStream = async ({
 }) => {
   let answer = "";
   const { controller, signal } = setAbortController();
-  console.log(signal, controller);
-  const result = await fetchAction({ options, messages, signal }).catch(
-    (error) => {
-      onError && onError(error, controller);
+  
+  try {
+    const result = await fetchAction({ options, messages, signal });
+    
+    if (!result.ok) {
+      const error = await result.json();
+      onError && onError(error);
+      return;
     }
-  );
-  if (!result) return;
-  if (!result.ok) {
-    const error = await result.json();
-    onError && onError(error);
-    return;
-  }
 
-  const parser = createParser((event) => {
-    console.log(event.data);
-    if (event.type === "event") {
-      if (event.data === "[DONE]") {
-        return;
+    const parser = createParser((event) => {
+      if (event.type === "event") {
+        if (event.data === "[DONE]") {
+          return;
+        }
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if ("content" in data.choices[0].delta) {
+          answer += data.choices[0].delta.content;
+          onMessage && onMessage(answer, controller);
+        }
       }
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch (error) {
-        return;
-      }
-      if ("content" in data.choices[0].delta) {
-        answer += data.choices[0].delta.content;
-        console.log(data);
-        onMessage && onMessage(answer, controller);
+    });
+
+    let hasStarted = false;
+    for await (const chunk of streamAsyncIterable(result.body)) {
+      const str = new TextDecoder().decode(chunk);
+      parser.feed(str);
+      if (!hasStarted) {
+        hasStarted = true;
+        onStar && onStar(str, controller);
       }
     }
-  });
-  let hasStarted = false;
-  for await (const chunk of streamAsyncIterable(result.body)) {
-    const str = new TextDecoder().decode(chunk);
-    parser.feed(str);
-    if (!hasStarted) {
-      hasStarted = true;
-      onStar && onStar(str, controller);
-    }
+  } catch (error) {
+    onError && onError(error, controller);
+  } finally {
+    await onEnd();
   }
-  await onEnd();
 };
