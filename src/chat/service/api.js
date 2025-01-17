@@ -26,9 +26,9 @@ export async function uploadFiles(files) {
   }
 }
 
-export async function getIncidents() {
+export async function getIncidents(skip = 0, limit = 10) {
   try {
-    const response = await fetch(`${API_URL}/incidents`, {
+    const response = await fetch(`${API_URL}/incidents?skip=${skip}&limit=${limit}`, {
       method: 'GET',
       headers: {
         'Accept': 'application/json',

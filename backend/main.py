@@ -102,56 +102,80 @@ async def health_check():
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
-
+    
 @app.get("/incidents")
-async def get_incidents(
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=1000),
-    filename: Optional[str] = None
-):
+async def get_incidents(skip: int = 0, limit: int = 10):
     try:
         collection = mongodb_client[DB_NAME][COLLECTION_NAME]
         
-        # Create the query filter
-        query_filter = {}
-        if filename:
-            query_filter["metadata.filename"] = filename
-            
-        # First get unique filenames and their counts
-        pipeline = [
-            {"$group": {
-                "_id": "$metadata.filename",
-                "count": {"$sum": 1},
-                "preview_image": {"$first": "$metadata.preview_image"},
-                "file_type": {"$first": "$metadata.file_type"},
-                "upload_timestamp": {"$first": "$metadata.upload_timestamp"}
-            }}
+        # First get total count of unique documents
+        count_pipeline = [
+            {
+                "$group": {
+                    "_id": "$metadata.filename"
+                }
+            },
+            {
+                "$count": "total"
+            }
         ]
         
-        file_stats = list(collection.aggregate(pipeline))
+        total_count_result = list(collection.aggregate(count_pipeline))
+        total_count = total_count_result[0]['total'] if total_count_result else 0
         
-        # Get the actual embeddings with pagination
-        cursor = collection.find(
-            query_filter,
-            {'_id': 0}
-        ).skip(skip).limit(limit)
+        # Get paginated unique documents
+        pipeline = [
+            {
+                "$group": {
+                    "_id": "$metadata.filename",
+                    "metadata": {"$first": "$metadata"},
+                    "count": {"$sum": 1}
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "metadata": 1,
+                    "count": 1
+                }
+            },
+            {
+                "$skip": skip
+            },
+            {
+                "$limit": limit
+            }
+        ]
         
-        incidents = list(cursor)
+        unique_documents = list(collection.aggregate(pipeline))
         
-        # Get total count
-        total_count = collection.count_documents(query_filter)
+        # Format the response to match what the frontend expects
+        formatted_documents = []
+        for doc in unique_documents:
+            if doc.get('metadata'):
+                formatted_documents.append({
+                    "metadata": {
+                        "filename": doc['metadata'].get('filename'),
+                        "preview_image": doc['metadata'].get('preview_image'),
+                        "file_type": doc['metadata'].get('file_type'),
+                        "upload_timestamp": doc['metadata'].get('upload_timestamp'),
+                        "embedding_count": doc.get('count', 0)
+                    }
+                })
         
+        # Return paginated response with metadata
         return {
+            "documents": formatted_documents,
             "total": total_count,
-            "file_stats": file_stats,
-            "incidents": incidents,
             "skip": skip,
             "limit": limit,
             "has_more": (skip + limit) < total_count
         }
+
     except Exception as e:
         print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile]):

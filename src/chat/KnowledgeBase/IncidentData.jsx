@@ -1,50 +1,50 @@
 import React, { useState, useEffect } from 'react';
 import { getIncidents } from '../service/api';
-import { Loading } from '@/components';
+import { Loading, Button } from '@/components';
 import styles from './knowledge.module.less';
 
 export function IncidentData() {
   const [incidents, setIncidents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [documentCounts, setDocumentCounts] = useState({});
+  const [pagination, setPagination] = useState({
+    skip: 0,
+    limit: 10,
+    total: 0,
+    hasMore: false
+  });
+
+  async function fetchIncidents(isLoadMore = false) {
+    try {
+      setLoading(true);
+      const response = await getIncidents(pagination.skip, pagination.limit);
+      
+      setIncidents(prev => isLoadMore ? [...prev, ...response.documents] : response.documents);
+      setPagination({
+        skip: response.skip,
+        limit: response.limit,
+        total: response.total,
+        hasMore: response.has_more
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function fetchIncidents() {
-      try {
-        const data = await getIncidents();
-        
-        // Get unique files only (first occurrence of each filename)
-        const uniqueFiles = data.reduce((acc, current) => {
-          const filename = current.metadata?.filename;
-          if (filename && !acc.some(item => item.metadata?.filename === filename)) {
-            acc.push(current);
-          }
-          return acc;
-        }, []);
-        
-        setIncidents(uniqueFiles);
-        
-        // Calculate document counts per file
-        const counts = data.reduce((acc, doc) => {
-          const filename = doc.metadata?.filename;
-          if (filename) {
-            acc[filename] = (acc[filename] || 0) + 1;
-          }
-          return acc;
-        }, {});
-        setDocumentCounts(counts);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    }
+    fetchIncidents(false);
+  }, []); // Initial load
 
-    fetchIncidents();
-  }, []);
+  const loadMore = async () => {
+    setPagination(prev => ({
+      ...prev,
+      skip: prev.skip + prev.limit
+    }));
+    await fetchIncidents(true);
+  };
 
-  if (loading) return <Loading />;
   if (error) return <div className={styles.error}>Error loading incidents: {error}</div>;
 
   return (
@@ -52,7 +52,7 @@ export function IncidentData() {
       <h2 className={styles.incidentsTitle}>Incident Data</h2>
       <div className={styles.incidentsList}>
         {incidents.map((incident, index) => (
-          <div key={index} className={styles.incidentItem}>
+          <div key={`${incident.metadata?.filename}-${index}`} className={styles.incidentItem}>
             <div className={styles.incidentContent}>
               {incident.metadata?.preview_image && (
                 <div className={styles.incidentFilePreview}>
@@ -68,13 +68,20 @@ export function IncidentData() {
                 {incident.metadata?.filename}
               </div>
               <div className={styles.documentCount}>
-                {documentCounts[incident.metadata?.filename]} embeddings
+                {incident.metadata?.embedding_count} embeddings
               </div>
             </div>
           </div>
         ))}
       </div>
+      
+      {loading && <Loading />}
+      
+      {pagination.hasMore && !loading && (
+        <div className={styles.loadMore}>
+          <Button onClick={loadMore} type="primary">Load More</Button>
+        </div>
+      )}
     </div>
-);
-
+  );
 }
