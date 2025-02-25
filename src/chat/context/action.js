@@ -10,7 +10,6 @@ export default function action(state, dispatch) {
 
   const ensureValidChatState = () => {
     if (!state.chat || !Array.isArray(state.chat) || state.chat.length === 0) {
-      // Initialize with a default chat if invalid
       setState({
         chat: [{
           title: "Welcome",
@@ -24,13 +23,25 @@ export default function action(state, dispatch) {
       return false;
     }
     
-    // Ensure currentChat is valid
     if (state.currentChat >= state.chat.length) {
       setState({ currentChat: state.chat.length - 1 });
       return false;
     }
     
     return true;
+  };
+
+  // Helper to get limited message history
+  const getLimitedMessageHistory = (messages, limit = 4) => {
+    if (!messages || messages.length === 0) return [];
+    
+    // Always include the latest message
+    const latestMessage = messages[messages.length - 1];
+    
+    // Get previous messages up to the limit
+    const previousMessages = messages.slice(-limit, -1);
+    
+    return [...previousMessages, latestMessage];
   };
 
   return {
@@ -50,46 +61,53 @@ export default function action(state, dispatch) {
       try {
         // Get context from the /chat endpoint
         const contextResponse = await getContext(typeingMessage.content);
-        console.log('Context received:', contextResponse); // Debug log
-        
-        // Extract context from the response
         const context = contextResponse.context;
         
         // Create message with context
         const messageWithContext = `Context: ${context}\n\nQuestion: ${typeingMessage.content}`;
-        console.log('Message with context:', messageWithContext); // Debug log
     
-        // Store the original message in chat history (without context)
+        // Store the original message in chat history
         const messages = [...(chat[currentChat].messages || []), {
           ...typeingMessage,
           sentTime: Date.now()
         }];
-    
+
         let newChat = [...chat];
         newChat[currentChat] = { ...chat[currentChat], messages };
-    
+
         setState({
           is: { ...is, thinking: true },
           typeingMessage: { content: '' },
           chat: newChat,
         });
-    
+
         const controller = new AbortController();
-    
+
+        // Get limited message history
+        const limitedMessages = getLimitedMessageHistory(messages);
+
         await fetchStream({
-          messages: messages.map((msg, index) => {
-            // Replace the last message with our context-enhanced version
-            if (index === messages.length - 1) {
+          messages: [
+            // Add system message first
+            {
+              role: "system",
+              content: "You are an incident management assistant tasked with resolving technical issues efficiently. Use available context—including previous incident data—to provide precise, actionable answers. Your responses must be brief and focused on delivering clear, step-by-step guidance. If the context lacks relevant details, offer the best answer based on established best practices without inventing information. Prioritize clarity and direct instructions to help users quickly mitigate incidents."
+            },
+            // Then map through existing messages
+            ...limitedMessages.map((msg, index) => {
+              // Replace the last message with our context-enhanced version
+              if (index === limitedMessages.length - 1) {
+                return {
+                  role: msg.role,
+                  content: `Context: ${context}\n\nQuestion: ${msg.content}`
+                };
+              }
               return {
                 role: msg.role,
-                content: messageWithContext // Use the enhanced message with context
+                content: msg.content
               };
-            }
-            return {
-              role: msg.role,
-              content: msg.content
-            };
-          }),
+            })
+          ],
           options: options.openai,
           signal: controller.signal,
           onMessage(content) {
@@ -103,7 +121,7 @@ export default function action(state, dispatch) {
                   role: "assistant",
                   sentTime: Date.now(),
                   id: Date.now(),
-          },
+                },
               ],
             };
             setState({
@@ -138,9 +156,7 @@ export default function action(state, dispatch) {
           is: { ...is, thinking: false },
         });
       }
-    }
-    ,
-    
+    },
 
     newChat() {
       const { chat } = state;
@@ -176,7 +192,6 @@ export default function action(state, dispatch) {
       const chat = [...state.chat];
       chat.splice(index, 1);
       
-      // Ensure at least one chat remains
       if (chat.length === 0) {
         chat.push({
           title: "New Conversation",
