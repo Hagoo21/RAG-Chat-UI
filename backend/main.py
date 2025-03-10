@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Literal
 import json
 from openai import OpenAI
 from pymongo import MongoClient
@@ -13,11 +13,91 @@ import fitz  # PyMuPDF
 import io
 import base64
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
 class MessageRequest(BaseModel):
     message: str
+
+class SQLQueryFunction(BaseModel):
+    query: str = Field(..., description="The SQL query to execute")
+
+class ChatFunction(BaseModel):
+    message: str = Field(..., description="The message to process using RAG")
+
+class FunctionCall(BaseModel):
+    name: str
+    arguments: str
+
+# Update the tools definition
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_incidents_db",
+            "description": """Query structured incident data from monitoring systems. The data includes:
+                - id: Unique incident identifier
+                - source: Integration source (e.g., 'Integration Aternity')
+                - priority: Incident priority level (1-4)
+                - region: Geographic region (e.g., 'ASIA', 'EMEA', 'NA')
+                - enhanced_description: Detailed incident description""",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "MongoDB query in JSON format. For aggregations, include the full pipeline."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_incident_context",
+            "description": "Search through unstructured incident documentation using semantic search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The search query for finding relevant incident documentation"
+                    }
+                },
+                "required": ["message"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assess_and_refine_context",
+            "description": "Assess if the current context is sufficient and relevant for the question, then refine it into a concise format.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "current_context": {
+                        "type": "string",
+                        "description": "Current accumulated context"
+                    },
+                    "user_question": {
+                        "type": "string",
+                        "description": "Original user question"
+                    }
+                },
+                "required": ["current_context", "user_question"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
+    }
+]
 
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -253,19 +333,118 @@ async def upload_documents(files: List[UploadFile]):
         print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat", response_model=Dict[str, str])
-async def search_context(request: MessageRequest):
+async def query_incidents_db(query: str) -> str:
+    try:
+        collection = mongodb_client[DB_NAME]["Structured_Data"]
+        
+        # Use GPT to convert natural language to MongoDB query
+        query_conversion_messages = [
+            {
+                "role": "system",
+                "content": """Convert natural language queries to MongoDB queries and return the result as a JSON object.
+                For aggregations (top N, counting, grouping), ALWAYS use an aggregation pipeline and include proper sorting.
+                
+                Example formats:
+                1. Top N query:
+                {"pipeline": [
+                    {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+                    {"$sort": {"count": -1}},
+                    {"$limit": 10}
+                ]}
+                
+                2. Simple filter:
+                {"query": {"region": "ASIA", "priority": {"$lte": 2}}}
+                
+                3. Complex aggregation:
+                {"pipeline": [
+                    {"$match": {"priority": {"$lte": 2}}},
+                    {"$group": {"_id": "$source", "count": {"$sum": 1}, "avg_priority": {"$avg": "$priority"}}},
+                    {"$sort": {"count": -1}}
+                ]}
+                
+                Common query patterns:
+                - "top N": Use $group, $sort, and $limit
+                - "maximum/minimum": Use $sort and $limit
+                - "count by": Use $group with $sum
+                - "average/mean": Use $group with $avg
+                
+                The data structure is:
+                {
+                    "id": number,
+                    "source": string (technology/system name),
+                    "priority": number (1-4),
+                    "region": string,
+                    "enhanced_description": string
+                }
+                
+                For queries about "top", "most", or "maximum", ALWAYS use an aggregation pipeline with proper sorting and limiting."""
+            },
+            {
+                "role": "user",
+                "content": f"Convert this query to MongoDB JSON query: {query}"
+            }
+        ]
+
+        query_response = openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=query_conversion_messages,
+            response_format={ "type": "json_object" }
+        )
+        
+        # Parse the MongoDB query from GPT's response
+        query_object = json.loads(query_response.choices[0].message.content)
+        
+        # Handle different query types
+        if "pipeline" in query_object:
+            # Execute aggregation pipeline
+            results = list(collection.aggregate(query_object["pipeline"]))
+        else:
+            # Execute find query
+            find_query = query_object.get("query", {})
+            results = list(collection.find(find_query, {'_id': 0}))
+        
+        if not results:
+            return "No matching incidents found in structured data."
+        
+        # Format the results as a string
+        formatted_results = []
+        for result in results:
+            if isinstance(result, dict):
+                # Handle aggregation results differently if needed
+                if 'count' in result or '_id' in result:
+                    # Format aggregation results
+                    formatted_results.append(
+                        f"Group: {result.get('_id', 'N/A')}\n"
+                        f"Count: {result.get('count', 'N/A')}\n"
+                        f"Additional Data: {', '.join([f'{k}: {v}' for k, v in result.items() if k not in ['_id', 'count']])}"
+                    )
+                else:
+                    # Format regular document results
+                    formatted_results.append(
+                        f"ID: {result.get('id')}\n"
+                        f"Source: {result.get('source')}\n"
+                        f"Priority: {result.get('priority')}\n"
+                        f"Region: {result.get('region')}\n"
+                        f"Description: {result.get('enhanced_description', '')}...\n"
+                    )
+        
+        print(f"ran query_incidents_db()")
+        return "\n".join(formatted_results)
+    except json.JSONDecodeError:
+        return "Error: Could not parse the query structure"
+    except Exception as e:
+        print(f"Error querying structured data: {str(e)}")
+        return f"Error querying structured data: {str(e)}"
+
+async def search_incident_context(message: str) -> str:
     try:
         collection = mongodb_client[DB_NAME][COLLECTION_NAME]
-        
-        # Get embedding for the query
         query_embedding_response = openai_client.embeddings.create(
             model="text-embedding-ada-002",
-            input=request.message
+            input=message
         )
         query_embedding = query_embedding_response.data[0].embedding
 
-        # Perform vector search
         pipeline = [
             {
                 "$vectorSearch": {
@@ -280,9 +459,149 @@ async def search_context(request: MessageRequest):
 
         results = list(collection.aggregate(pipeline))
         contexts = [doc["text"] for doc in results]
-        concatenated_context = " ".join(contexts)
-        
-        return {"context": concatenated_context}
+        print("ran search_incident_context()")
+        return " ".join(contexts)
     except Exception as e:
-        print(f"Search error: {str(e)}")
+        return f"Error searching context: {str(e)}"
+
+async def assess_and_refine_context(context: str, question: str) -> str:
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": """You are a context refinement assistant. Your job is to:
+                1. Remove redundant or duplicate information while preserving unique data points
+                2. Format the text to be clearly organized
+                3. Keep the original information intact - DO NOT answer the question
+                
+                For structured data:
+                - Keep all unique incident entries
+                - Maintain statistical information
+                - Format in clear sections
+                
+                For unstructured data:
+                - Remove duplicate passages
+                - Keep detailed information intact
+                - Maintain specific examples and procedures
+                
+                If the context is very long (>1000 words):
+                - Preserve all technical details (error codes, commands, specific procedures)
+                - Keep exact metrics and statistics
+                - Summarize descriptive passages while maintaining technical accuracy
+                - Combine similar incidents while preserving unique identifiers
+                - Keep specific timestamps and incident IDs
+                - Maintain critical troubleshooting steps
+                
+                Example of summarizing while preserving technical details:
+                Original: "The authentication service failed at 14:23 GMT with error code E1234. The system attempted three retries using the standard retry policy of 5-second intervals. Each retry resulted in the same error code E1234. Investigation showed the root cause was a misconfigured connection pool size of 15, which was below the required minimum of 25 connections."
+                
+                Summarized: "Authentication service failure (14:23 GMT) - Error E1234. Three retry attempts at 5s intervals. Root cause: connection pool size 15 (minimum required: 25)"
+                
+                Return the refined context as a string, maintaining the following format:
+                
+                Structured Data:
+                [Query Purpose]: 
+                - Incident 1: [key details]
+                - Incident 2: [key details]
+                
+                Unstructured Documentation:
+                [Technical details and procedures]
+                [Summarized background information]
+                """
+            },
+            {
+                "role": "user",
+                "content": f"Question: {question}\n\nContext to refine: {context}"
+            }
+        ]
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=messages,
+            response_format={ "type": "text" }  # Changed to text since we don't need JSON anymore
+        )
+        
+        return response.choices[0].message.content
+            
+    except Exception as e:
+        print(f"Error assessing context: {str(e)}")
+        return context  # Return original context if assessment fails
+
+@app.post("/chat", response_model=Dict[str, str])
+async def chat_endpoint(request: MessageRequest):
+    try:
+        # Initial chain of thought analysis
+        planning_messages = [
+            {
+                "role": "system",
+                "content": """You are an incident management assistant. Using chain of thought, analyze the user's question and:
+                1. Determine which tools are needed:
+                   - structured_data: Use for:
+                     * Specific incident queries
+                     * Statistical analysis (counts, averages, top N)
+                     * Filtered data based on fields
+                     * Aggregations and grouping
+                   - unstructured_data: Use for:
+                     * Searching documentation and incident reports
+                     * Finding detailed problem descriptions
+                     * Identifying resolution steps
+                     * Supporting context for structured data
+                
+                Respond in JSON format:
+                {
+                    "reasoning": "Your step-by-step thought process",
+                    "tools_needed": {
+                        "structured_data": boolean,
+                        "unstructured_data": boolean
+                    },
+                    "mongodb_queries": [
+                        {
+                            "purpose": "What this query is for",
+                            "query": "MongoDB query in JSON format"
+                        }
+                    ]
+                }"""
+            },
+            {
+                "role": "user",
+                "content": request.message
+            }
+        ]
+
+        # Get the analysis and plan
+        plan_response = openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=planning_messages,
+            response_format={ "type": "json_object" }
+        )
+        
+        plan = json.loads(plan_response.choices[0].message.content)
+        combined_context = []
+
+        # Execute structured data queries if needed
+        if plan["tools_needed"]["structured_data"]:
+            for query_info in plan["mongodb_queries"]:
+                result = await query_incidents_db(query_info["query"])
+                combined_context.append(f"Structured Data ({query_info['purpose']}): {result}")
+
+        # Execute unstructured search if needed
+        if plan["tools_needed"]["unstructured_data"]:
+            result = await search_incident_context(request.message)
+            combined_context.append(f"Unstructured Documentation: {result}")
+
+        # If no context was gathered, default to RAG search
+        if not combined_context:
+            result = await search_incident_context(request.message)
+            combined_context.append(f"Unstructured Documentation: {result}")
+
+        # Assess and refine the gathered context
+        final_context = await assess_and_refine_context(
+            context=" ".join(combined_context),
+            question=request.message
+        )
+        print(f"final_context: {final_context}")
+        return {"context": final_context}
+
+    except Exception as e:
+        print(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

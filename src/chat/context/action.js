@@ -91,7 +91,7 @@ export default function action(state, dispatch) {
             // Add system message first
             {
               role: "system",
-              content: "You are an incident management assistant tasked with resolving technical issues efficiently. Use available context—including previous incident data—to provide precise, actionable answers. Your responses must be brief and focused on delivering clear, step-by-step guidance. If the context lacks relevant details, offer the best answer based on established best practices without inventing information. Prioritize clarity and direct instructions to help users quickly mitigate incidents."
+              content: "You are an incident management assistant tasked with resolving technical issues efficiently. Use available incident data to provide precise, actionable answers. Your responses must be brief and focused on delivering clear, step-by-step guidance. Never speculate or make assumptions - if you don't have enough information to fully answer a question, be direct about what you know and don't know. Offer the best answer based on established best practices without inventing information. Prioritize clarity and direct instructions to help users quickly mitigate incidents."
             },
             // Then map through existing messages
             ...limitedMessages.map((msg, index) => {
@@ -99,7 +99,7 @@ export default function action(state, dispatch) {
               if (index === limitedMessages.length - 1) {
                 return {
                   role: msg.role,
-                  content: `Context: ${context}\n\nQuestion: ${msg.content}`
+                  content: `Incident Data: ${context}\n\nQuestion: ${msg.content}`
                 };
               }
               return {
