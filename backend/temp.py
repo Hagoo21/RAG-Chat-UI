@@ -1,11 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import os
-from typing import List, Dict, Optional, Literal, Any
+from typing import List, Dict, Any, Optional
 import json
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from PIL import Image
@@ -15,8 +15,18 @@ import base64
 from datetime import datetime
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
-from openai.types.chat import ChatCompletion
+from dataclasses import dataclass
+import traceback
+from agents import set_default_openai_key, set_tracing_export_api_key, set_tracing_disabled, enable_verbose_stdout_logging, set_default_openai_client
 
+# Updated imports for the Agents SDK
+from agents import Agent, RunContextWrapper, Runner, function_tool
+from agents.run import RunConfig
+from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
+
+# ---------------------------
+# Pydantic models
+# ---------------------------
 class MessageRequest(BaseModel):
     message: str
 
@@ -47,76 +57,31 @@ class StructuredQueryParams(BaseModel):
     query: str
     query_type: str
 
-# Update the tools definition
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_incidents_db",
-            "description": """Query structured incident data from monitoring systems. The data includes:
-                - id: Unique incident identifier
-                - source: Integration source (e.g., 'Integration Aternity')
-                - priority: Incident priority level (1-4)
-                - region: Geographic region (e.g., 'ASIA', 'EMEA', 'NA')
-                - enhanced_description: Detailed incident description""",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "MongoDB query in JSON format. For aggregations, include the full pipeline."
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": False
-            },
-            "strict": True
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_incident_context",
-            "description": "Search through unstructured incident documentation using semantic search.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "The search query for finding relevant incident documentation"
-                    }
-                },
-                "required": ["message"],
-                "additionalProperties": False
-            },
-            "strict": True
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "assess_and_refine_context",
-            "description": "Assess if the current context is sufficient and relevant for the question, then refine it into a concise format.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "current_context": {
-                        "type": "string",
-                        "description": "Current accumulated context"
-                    },
-                    "user_question": {
-                        "type": "string",
-                        "description": "Original user question"
-                    }
-                },
-                "required": ["current_context", "user_question"],
-                "additionalProperties": False
-            },
-            "strict": True
-        }
-    }
-]
+# Structured output model for incident responses
+class IncidentResponse(BaseModel):
+    answer: str
+    sources: List[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    query_details: Optional[Dict[str, Any]] = None
 
+# ---------------------------
+# Agent Context
+# ---------------------------
+@dataclass
+class IncidentContext:
+    mongodb_client: Any
+    openai_client: Any
+    last_query: str = None
+    last_results: Any = None
+    search_history: List[Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        if self.search_history is None:
+            self.search_history = []
+
+# ---------------------------
+# Environment and Globals
+# ---------------------------
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
 DB_NAME = "ChatMIM"
@@ -126,9 +91,34 @@ COLLECTION_NAME = "Incidents"
 mongodb_client = None
 openai_client = None
 
+# Get the API key
+api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    print("WARNING: OPENAI_API_KEY environment variable is not set!")
+    print("Tool calls and agent functionality may not work correctly.")
+    # You could set a default key here for development, but not recommended for production
+    # api_key = "your-api-key-here"  # NOT RECOMMENDED for production
+
+# Set up the API key for both the OpenAI client and tracing
+if api_key:
+    # This will set the key for both LLM requests and tracing
+    set_default_openai_key(api_key, use_for_tracing=True)
+    
+    # Also explicitly set it for tracing to be sure
+    set_tracing_export_api_key(api_key)
+    
+    # Enable verbose logging for debugging
+    enable_verbose_stdout_logging()
+    
+    print("OpenAI API key configured for both client and tracing")
+else:
+    # Disable tracing if no API key is available
+    set_tracing_disabled(True)
+    print("Tracing disabled due to missing API key")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     global mongodb_client, openai_client
     try:
         mongodb_client = MongoClient(
@@ -141,36 +131,48 @@ async def lifespan(app: FastAPI):
             connectTimeoutMS=5000,
             serverSelectionTimeoutMS=5000
         )
-        # Verify connection
         mongodb_client.admin.command('ping')
         print("Connected to MongoDB!")
         
-        # Initialize OpenAI client
-        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Initialize the AsyncOpenAI client with the API key
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set!")
+            
+        openai_client = AsyncOpenAI(api_key=api_key)
+        
+        # Set this client as the default for the Agents SDK
+        set_default_openai_client(openai_client, use_for_tracing=True)
+        
+        print("Initialized AsyncOpenAI client and set as default for Agents SDK")
         
         yield
     except Exception as e:
         print(f"Startup error: {e}")
         raise
     finally:
-        # Shutdown
         if mongodb_client:
             mongodb_client.close()
             print("Closed MongoDB connection")
 
 app = FastAPI(lifespan=lifespan)
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://adorable-macaron-2074b9.netlify.app", "https://rag-chat-ui-backend:10000", "http://localhost:8080"],
+    allow_origins=[
+        "https://adorable-macaron-2074b9.netlify.app",
+        "https://rag-chat-ui-backend:10000",
+        "http://localhost:8080"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------------------------
+# Utility Functions
+# ---------------------------
 def create_text_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 50) -> List[str]:
-    """Split text into overlapping chunks."""
     chunks = []
     start = 0
     text_length = len(text)
@@ -193,6 +195,326 @@ def create_text_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 5
     
     return chunks
 
+# ---------------------------
+# Tool Functions Using function_tool Decorator
+# ---------------------------
+@function_tool
+async def search_incident_context(wrapper: RunContextWrapper[IncidentContext], query: str, limit: int) -> str:
+    """Search through unstructured incident documentation using semantic search to find detailed information.
+    
+    This is the PRIMARY tool for most queries and should be used FIRST for:
+    - Finding specific incident details
+    - Retrieving troubleshooting steps
+    - Getting explanations or context about incidents
+    - Understanding procedures, policies, or technical information
+    - Answering "how" and "why" questions
+    
+    The limit parameter controls the number of results (recommended: 5-10).
+    """
+    print(f"DEBUG: search_incident_context called with query='{query}', limit={limit}")
+    try:
+        context = wrapper.context
+        collection = context.mongodb_client[DB_NAME][COLLECTION_NAME]
+        
+        # If limit is not provided or invalid, use a reasonable default
+        if not limit or limit <= 0:
+            limit = 5
+        
+        # Use the async client
+        query_embedding_response = await context.openai_client.embeddings.create(
+            model="text-embedding-ada-002",
+            input=query
+        )
+        query_embedding = query_embedding_response.data[0].embedding
+
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "vector_search_index",
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": limit * 20,
+                    "limit": limit
+                }
+            }
+        ]
+
+        results = list(collection.aggregate(pipeline))
+        contexts = [doc["text"] for doc in results]
+        
+        # Store in context for later reference
+        context.last_query = query
+        context.last_results = contexts
+        context.search_history.append({"query": query, "result_count": len(contexts)})
+        
+        print(f"DEBUG: search_incident_context found {len(contexts)} results")
+        return " ".join(contexts)
+    except Exception as e:
+        print(f"ERROR in search_incident_context: {str(e)}")
+        traceback.print_exc()
+        return f"Error searching context: {str(e)}"
+
+@function_tool
+async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query: str, query_type: str) -> str:
+    """Query structured incident data to get quantitative information and statistics.
+    
+    Use this tool ONLY for:
+    - Counting incidents by category, region, priority, etc.
+    - Finding the "top N" or "most common" incidents
+    - Getting numerical metrics or statistics
+    - Aggregating data for trends analysis
+    - Questions requiring precise counts or measurements
+    
+    Results are limited to a maximum of 50 documents for performance reasons.
+    Valid query_type values: exact_match, text_search, aggregation.
+    
+    For most other questions, use search_incident_context instead.
+    """
+    try:
+        context = wrapper.context
+        collection = context.mongodb_client[DB_NAME]["Structured_Data"]
+        
+        # Create a query conversion agent
+        query_conversion_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Convert natural language queries to MongoDB queries and return the result as a JSON object. "
+                    "For aggregations (top N, counting, grouping), ALWAYS use an aggregation pipeline and include proper sorting. "
+                    "Example formats:\n"
+                    "1. Top N query:\n"
+                    '{"pipeline": [ {"$group": {"_id": "$source", "count": {"$sum": 1}}}, '
+                    '{"$sort": {"count": -1}}, {"$limit": 10} ]}\n'
+                    "2. Simple filter:\n"
+                    '{"query": {"region": "ASIA", "priority": {"$lte": 2}}}\n'
+                    "3. Complex aggregation:\n"
+                    '{"pipeline": [ {"$match": {"priority": {"$lte": 2}}}, {"$group": {"_id": "$source", "count": {"$sum": 1}, '
+                    '"avg_priority": {"$avg": "$priority"}}}, {"$sort": {"count": -1}} ]}\n'
+                    "For queries about 'top', 'most', or 'maximum', ALWAYS use an aggregation pipeline with proper sorting and limiting."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Convert this query to MongoDB JSON query: {query}"
+            }
+        ]
+        
+        query_response = context.openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=query_conversion_messages
+        )
+        
+        query_object = json.loads(query_response.choices[0].message.content)
+        
+        # Add limit if not present to prevent excessive results
+        if "pipeline" in query_object:
+            has_limit = any("$limit" in stage for stage in query_object["pipeline"])
+            if not has_limit:
+                query_object["pipeline"].append({"$limit": 50})  # Default limit
+            results = list(collection.aggregate(query_object["pipeline"]))
+        else:
+            find_query = query_object.get("query", {})
+            results = list(collection.find(find_query, {'_id': 0}).limit(50))  # Default limit
+        
+        if not results:
+            return "No matching incidents found in structured data."
+        
+        # Format results
+        formatted_results = []
+        for result in results:
+            if isinstance(result, dict):
+                if 'count' in result or '_id' in result:
+                    formatted_results.append(
+                        f"Group: {result.get('_id', 'N/A')}\n"
+                        f"Count: {result.get('count', 'N/A')}\n"
+                        f"Additional Data: {', '.join([f'{k}: {v}' for k, v in result.items() if k not in ['_id', 'count']])}"
+                    )
+                else:
+                    formatted_results.append(
+                        f"ID: {result.get('id')}\n"
+                        f"Source: {result.get('source')}\n"
+                        f"Priority: {result.get('priority')}\n"
+                        f"Region: {result.get('region')}\n"
+                        f"Description: {result.get('enhanced_description', '')}...\n"
+                    )
+        
+        # Store in context for later reference
+        context.last_query = query
+        context.last_results = formatted_results
+        context.search_history.append({"query": query, "query_type": query_type, "result_count": len(results)})
+        
+        print("ran query_incidents_db()")
+        return "\n".join(formatted_results)
+    except json.JSONDecodeError:
+        return "Error: Could not parse the query structure"
+    except Exception as e:
+        print(f"Error querying structured data: {str(e)}")
+        return f"Error querying structured data: {str(e)}"
+
+@function_tool
+async def assess_and_refine_context(wrapper: RunContextWrapper[IncidentContext], context_text: str, question: str) -> str:
+    """Refine and organize context by removing duplicates and formatting clearly.
+    
+    Use this tool after retrieving information with search_incident_context or query_incidents_db when:
+    - The retrieved information contains duplicates
+    - The context needs better organization
+    - Multiple pieces of information need to be combined coherently
+    - The raw context is difficult to understand
+    
+    This tool helps prepare the final, well-structured response.
+    """
+    try:
+        context = wrapper.context
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a context refinement assistant. Your job is to:\n"
+                    "1. Remove redundant or duplicate information while preserving unique data points\n"
+                    "2. Format the text to be clearly organized\n"
+                    "3. Keep the original information intact - DO NOT answer the question\n\n"
+                    "For structured data:\n"
+                    "- Keep all unique incident entries\n"
+                    "- Maintain statistical information\n"
+                    "- Format in clear sections\n\n"
+                    "For unstructured data:\n"
+                    "- Remove duplicate passages\n"
+                    "- Keep detailed information intact\n"
+                    "- Maintain specific examples and procedures\n\n"
+                    "If the context is very long (>1000 words):\n"
+                    "- Preserve all technical details (error codes, commands, specific procedures)\n"
+                    "- Keep exact metrics and statistics\n"
+                    "- Summarize descriptive passages while maintaining technical accuracy\n"
+                    "- Combine similar incidents while preserving unique identifiers\n"
+                    "- Keep specific timestamps and incident IDs\n"
+                    "- Maintain critical troubleshooting steps\n\n"
+                    "Return the refined context as a string with clear sections."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Question: {question}\n\nContext to refine: {context_text}"
+            }
+        ]
+        
+        response = context.openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=messages
+        )
+        
+        print("ran assess_and_refine_context()")
+        return response.choices[0].message.content
+            
+    except Exception as e:
+        print(f"Error assessing context: {str(e)}")
+        return context_text
+
+# ---------------------------
+# Create Incident Analysis Agent
+# ---------------------------
+def create_incident_agent():
+    return Agent[IncidentContext](
+        name="incident_analysis_agent",
+        instructions=(
+            "You are an incident analysis agent specializing in retrieving and analyzing incident information. "
+            "You have access to two primary data sources:\n"
+            "1. Unstructured incident documentation (accessed via search_incident_context)\n"
+            "2. Structured incident data with fields: id, source, priority, region, and description (accessed via query_incidents_db)\n\n"
+            
+            "IMPORTANT TOOL SELECTION GUIDELINES:\n"
+            "- Use search_incident_context as your PRIMARY tool for MOST queries. This tool should be your FIRST choice for:\n"
+            "  * Finding detailed information about incidents\n"
+            "  * Retrieving troubleshooting steps or procedures\n"
+            "  * Understanding the context, causes, or impacts of incidents\n"
+            "  * Answering questions about 'how' or 'why' something happened\n"
+            "  * Getting explanations or technical details\n\n"
+            
+            "- Use query_incidents_db ONLY for quantitative questions requiring statistics or counts, such as:\n"
+            "  * 'How many incidents occurred in region X?'\n"
+            "  * 'What are the top 10 sources of incidents?'\n"
+            "  * 'Which priority level has the most incidents?'\n"
+            "  * Questions explicitly asking for numerical data or trends\n\n"
+            
+            "- After retrieving information, use assess_and_refine_context to organize and improve the presentation.\n\n"
+            
+            "PROCESS FOR ANSWERING QUESTIONS:\n"
+            "1. Analyze the question to determine if it requires detailed information (use search_incident_context) "
+            "   or quantitative data (use query_incidents_db).\n"
+            "2. For most questions, start with search_incident_context unless the question explicitly asks for counts, "
+            "   statistics, or 'top N' type information.\n"
+            "3. If the initial results don't fully answer the question, consider using the other tool or refining your query.\n"
+            "4. Use assess_and_refine_context to organize the information into a clear, coherent response.\n"
+            "5. Provide a comprehensive answer that directly addresses the user's question.\n\n"
+            
+            "Always explain your reasoning and strategy. Be thorough in your analysis but concise in your final response."
+        ),
+        tools=[search_incident_context, query_incidents_db, assess_and_refine_context]
+    )
+
+# ---------------------------
+# Chat Endpoint Using Runner
+# ---------------------------
+@app.post("/chat", response_model=Dict[str, Any])
+async def chat_endpoint(request: MessageRequest, debug: bool = False):
+    print(f"DEBUG: Processing chat request: '{request.message}'")
+    try:
+        # Create agent context with necessary clients
+        agent_context = IncidentContext(
+            mongodb_client=mongodb_client, 
+            openai_client=openai_client
+        )
+        
+        # Create the incident agent
+        incident_agent = create_incident_agent()
+        print(f"DEBUG: Created incident agent with {len(incident_agent.tools)} tools")
+        
+        # Configure the run
+        run_config = RunConfig(
+            workflow_name="Incident Analysis",
+            model="gpt-4-1106-preview",  # Use a model known to work well with function calling
+            tracing_disabled=False  # Enable tracing now that we've set the API key properly
+        )
+        
+        try:
+            print("DEBUG: Starting agent run")
+            # Run the agent
+            result = await Runner.run(
+                starting_agent=incident_agent,
+                input=request.message,
+                context=agent_context,
+                max_turns=10,
+                run_config=run_config
+            )
+            
+            print(f"DEBUG: Agent run completed, result type: {type(result).__name__}")
+            
+            # Prepare response
+            response = {"context": result.final_output}
+            
+            # Add debug information if requested
+            if debug:
+                response["debug"] = {
+                    "tool_calls": agent_context.search_history,
+                    "last_query": agent_context.last_query,
+                    "result_type": type(result).__name__,
+                    "has_final_output": hasattr(result, "final_output"),
+                }
+            
+            return response
+            
+        except Exception as e:
+            print(f"Agent execution error: {str(e)}")
+            traceback.print_exc()
+            return {"context": f"I encountered an issue while processing your request: {str(e)}"}
+        
+    except Exception as e:
+        print(f"Chat error: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------
+# Endpoints for Health and Incidents
+# ---------------------------
 @app.get("/health")
 async def health_check():
     try:
@@ -274,7 +596,9 @@ async def get_incidents(skip: int = 0, limit: int = 10):
         print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-
+# ---------------------------
+# File Upload Endpoint
+# ---------------------------
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile]):
     try:
@@ -286,7 +610,6 @@ async def upload_documents(files: List[UploadFile]):
             file_extension = file.filename.lower().split('.')[-1]
             preview_image = None
             
-            # Process different file types
             if file_extension == 'pdf':
                 pdf_document = fitz.open(stream=content, filetype="pdf")
                 text = ""
@@ -314,13 +637,12 @@ async def upload_documents(files: List[UploadFile]):
             else:
                 raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
             
-            # Create and process chunks
             chunks = create_text_chunks(text)
             embedded_chunks = []
             
             for chunk in chunks:
                 try:
-                    embedding_response = openai_client.embeddings.create(
+                    embedding_response = await openai_client.embeddings.create(
                         model="text-embedding-ada-002",
                         input=chunk
                     )
@@ -349,314 +671,4 @@ async def upload_documents(files: List[UploadFile]):
         }
     except Exception as e:
         print(f"Upload error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-async def query_incidents_db(query: str) -> str:
-    try:
-        collection = mongodb_client[DB_NAME]["Structured_Data"]
-        
-        # Use GPT to convert natural language to MongoDB query
-        query_conversion_messages = [
-            {
-                "role": "system",
-                "content": """Convert natural language queries to MongoDB queries and return the result as a JSON object.
-                For aggregations (top N, counting, grouping), ALWAYS use an aggregation pipeline and include proper sorting.
-                
-                Example formats:
-                1. Top N query:
-                {"pipeline": [
-                    {"$group": {"_id": "$source", "count": {"$sum": 1}}},
-                    {"$sort": {"count": -1}},
-                    {"$limit": 10}
-                ]}
-                
-                2. Simple filter:
-                {"query": {"region": "ASIA", "priority": {"$lte": 2}}}
-                
-                3. Complex aggregation:
-                {"pipeline": [
-                    {"$match": {"priority": {"$lte": 2}}},
-                    {"$group": {"_id": "$source", "count": {"$sum": 1}, "avg_priority": {"$avg": "$priority"}}},
-                    {"$sort": {"count": -1}}
-                ]}
-                
-                Common query patterns:
-                - "top N": Use $group, $sort, and $limit
-                - "maximum/minimum": Use $sort and $limit
-                - "count by": Use $group with $sum
-                - "average/mean": Use $group with $avg
-                
-                The data structure is:
-                {
-                    "id": number,
-                    "source": string (technology/system name),
-                    "priority": number (1-4),
-                    "region": string,
-                    "enhanced_description": string
-                }
-                
-                For queries about "top", "most", or "maximum", ALWAYS use an aggregation pipeline with proper sorting and limiting."""
-            },
-            {
-                "role": "user",
-                "content": f"Convert this query to MongoDB JSON query: {query}"
-            }
-        ]
-
-        query_response = openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=query_conversion_messages,
-            response_format={ "type": "json_object" }
-        )
-        
-        # Parse the MongoDB query from GPT's response
-        query_object = json.loads(query_response.choices[0].message.content)
-        
-        # Handle different query types
-        if "pipeline" in query_object:
-            # Execute aggregation pipeline
-            results = list(collection.aggregate(query_object["pipeline"]))
-        else:
-            # Execute find query
-            find_query = query_object.get("query", {})
-            results = list(collection.find(find_query, {'_id': 0}))
-        
-        if not results:
-            return "No matching incidents found in structured data."
-        
-        # Format the results as a string
-        formatted_results = []
-        for result in results:
-            if isinstance(result, dict):
-                # Handle aggregation results differently if needed
-                if 'count' in result or '_id' in result:
-                    # Format aggregation results
-                    formatted_results.append(
-                        f"Group: {result.get('_id', 'N/A')}\n"
-                        f"Count: {result.get('count', 'N/A')}\n"
-                        f"Additional Data: {', '.join([f'{k}: {v}' for k, v in result.items() if k not in ['_id', 'count']])}"
-                    )
-                else:
-                    # Format regular document results
-                    formatted_results.append(
-                        f"ID: {result.get('id')}\n"
-                        f"Source: {result.get('source')}\n"
-                        f"Priority: {result.get('priority')}\n"
-                        f"Region: {result.get('region')}\n"
-                        f"Description: {result.get('enhanced_description', '')}...\n"
-                    )
-        
-        print(f"ran query_incidents_db()")
-        return "\n".join(formatted_results)
-    except json.JSONDecodeError:
-        return "Error: Could not parse the query structure"
-    except Exception as e:
-        print(f"Error querying structured data: {str(e)}")
-        return f"Error querying structured data: {str(e)}"
-
-async def search_incident_context(message: str, limit: int = 5) -> str:
-    try:
-        collection = mongodb_client[DB_NAME][COLLECTION_NAME]
-        query_embedding_response = openai_client.embeddings.create(
-            model="text-embedding-ada-002",
-            input=message
-        )
-        query_embedding = query_embedding_response.data[0].embedding
-
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": "vector_search_index",
-                    "path": "embedding",
-                    "queryVector": query_embedding,
-                    "numCandidates": limit * 20,
-                    "limit": limit
-                }
-            }
-        ]
-
-        results = list(collection.aggregate(pipeline))
-        contexts = [doc["text"] for doc in results]
-        print("ran search_incident_context()")
-        return " ".join(contexts)
-    except Exception as e:
-        return f"Error searching context: {str(e)}"
-
-async def assess_and_refine_context(context: str, question: str) -> str:
-    try:
-        messages = [
-            {
-                "role": "system",
-                "content": """You are a context refinement assistant. Your job is to:
-                1. Remove redundant or duplicate information while preserving unique data points
-                2. Format the text to be clearly organized
-                3. Keep the original information intact - DO NOT answer the question
-                
-                For structured data:
-                - Keep all unique incident entries
-                - Maintain statistical information
-                - Format in clear sections
-                
-                For unstructured data:
-                - Remove duplicate passages
-                - Keep detailed information intact
-                - Maintain specific examples and procedures
-                
-                If the context is very long (>1000 words):
-                - Preserve all technical details (error codes, commands, specific procedures)
-                - Keep exact metrics and statistics
-                - Summarize descriptive passages while maintaining technical accuracy
-                - Combine similar incidents while preserving unique identifiers
-                - Keep specific timestamps and incident IDs
-                - Maintain critical troubleshooting steps
-                
-                Example of summarizing while preserving technical details:
-                Original: "The authentication service failed at 14:23 GMT with error code E1234. The system attempted three retries using the standard retry policy of 5-second intervals. Each retry resulted in the same error code E1234. Investigation showed the root cause was a misconfigured connection pool size of 15, which was below the required minimum of 25 connections."
-                
-                Summarized: "Authentication service failure (14:23 GMT) - Error E1234. Three retry attempts at 5s intervals. Root cause: connection pool size 15 (minimum required: 25)"
-                
-                Return the refined context as a string, maintaining the following format:
-                
-                Structured Data:
-                [Query Purpose]: 
-                - Incident 1: [key details]
-                - Incident 2: [key details]
-                
-                Unstructured Documentation:
-                [Technical details and procedures]
-                [Summarized background information]
-                """
-            },
-            {
-                "role": "user",
-                "content": f"Question: {question}\n\nContext to refine: {context}"
-            }
-        ]
-
-        response = openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=messages,
-            response_format={ "type": "text" }  # Changed to text since we don't need JSON anymore
-        )
-        
-        return response.choices[0].message.content
-            
-    except Exception as e:
-        print(f"Error assessing context: {str(e)}")
-        return context  # Return original context if assessment fails
-
-# Define the available tools
-AGENT_TOOLS = {
-    "search_unstructured_data": {
-        "name": "search_unstructured_data",
-        "description": "Search through unstructured incident documentation using semantic search. Returns relevant incident descriptions and context.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query"},
-                "limit": {"type": "integer", "description": "Number of results to return", "default": 5}
-            },
-            "required": ["query"]
-        }
-    },
-    "query_structured_data": {
-        "name": "query_structured_data",
-        "description": "Query structured incident data containing id, source, priority, region, and descriptions. Supports complex MongoDB queries.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "MongoDB query in natural language"},
-                "query_type": {
-                    "type": "string", 
-                    "enum": ["exact_match", "text_search", "aggregation"],
-                    "description": "Type of query to perform"
-                }
-            },
-            "required": ["query", "query_type"]
-        }
-    }
-}
-
-async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> str:
-    """Execute the specified tool with given input."""
-    if tool_name == "search_unstructured_data":
-        params = SearchParams(**tool_input)
-        return await search_incident_context(params.query, params.limit)
-    elif tool_name == "query_structured_data":
-        params = StructuredQueryParams(**tool_input)
-        return await query_incidents_db(params.query)
-    else:
-        raise ValueError(f"Unknown tool: {tool_name}")
-
-async def run_agent(user_query: str) -> str:
-    """Run the ReACT agent to process the user query."""
-    messages = [
-        {
-            "role": "system",
-            "content": """You are an incident analysis agent using the ReACT framework. 
-            You have access to two data sources:
-            1. Unstructured incident documentation with semantic search capabilities
-            2. Structured incident data with fields: id, source, priority, region, and description
-
-            Follow this format for your responses:
-            Thought: Analyze the task and determine what information is needed
-            Action: {tool_name}
-            Action Input: {tool_input_json}
-            
-            After receiving observation:
-            Thought: Analyze the observation and determine next steps
-            Action/Final Answer: Take another action or provide final answer
-
-            Always explain your reasoning and strategy."""
-        },
-        {
-            "role": "user",
-            "content": user_query
-        }
-    ]
-
-    max_turns = 5
-    turn = 0
-
-    while turn < max_turns:
-        response: ChatCompletion = await openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=messages,
-            tools=list(AGENT_TOOLS.values()),
-            tool_choice="auto"
-        )
-
-        message = response.choices[0].message
-
-        # Check if the agent wants to use a tool
-        if message.tool_calls:
-            tool_call = message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_input = json.loads(tool_call.function.arguments)
-
-            # Execute the tool
-            observation = await execute_tool(tool_name, tool_input)
-
-            # Add the interaction to messages
-            messages.extend([
-                {"role": "assistant", "content": None, "tool_calls": [tool_call]},
-                {"role": "tool", "tool_call_id": tool_call.id, "content": observation}
-            ])
-        else:
-            # Agent has reached a final answer
-            return message.content
-
-        turn += 1
-
-    return "Agent reached maximum turns without finding a complete answer."
-
-@app.post("/chat", response_model=Dict[str, str])
-async def chat_endpoint(request: MessageRequest):
-    try:
-        # Run the ReACT agent
-        context = await run_agent(request.message)
-        
-        return {"context": context}
-    except Exception as e:
-        print(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
