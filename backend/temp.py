@@ -24,6 +24,24 @@ from agents import Agent, RunContextWrapper, Runner, function_tool
 from agents.run import RunConfig
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 
+import sys
+import builtins
+
+# Open a log file for application output
+log_file = open("app_output.log", "a")
+
+# Store the original stdout
+original_stdout = sys.stdout
+
+# Function to print application messages to file
+def app_print(*args, **kwargs):
+    print(*args, file=log_file, **kwargs)
+    log_file.flush()
+
+# Now use app_print for your application logs
+# Example: app_print("This goes to the file")
+# Regular print("This goes to terminal") will still go to terminal
+
 # ---------------------------
 # Pydantic models
 # ---------------------------
@@ -95,8 +113,8 @@ openai_client = None
 api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    print("WARNING: OPENAI_API_KEY environment variable is not set!")
-    print("Tool calls and agent functionality may not work correctly.")
+    app_print("WARNING: OPENAI_API_KEY environment variable is not set!")
+    app_print("Tool calls and agent functionality may not work correctly.")
     # You could set a default key here for development, but not recommended for production
     # api_key = "your-api-key-here"  # NOT RECOMMENDED for production
 
@@ -111,11 +129,11 @@ if api_key:
     # Enable verbose logging for debugging
     enable_verbose_stdout_logging()
     
-    print("OpenAI API key configured for both client and tracing")
+    app_print("OpenAI API key configured for both client and tracing")
 else:
     # Disable tracing if no API key is available
     set_tracing_disabled(True)
-    print("Tracing disabled due to missing API key")
+    app_print("Tracing disabled due to missing API key")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -132,7 +150,7 @@ async def lifespan(app: FastAPI):
             serverSelectionTimeoutMS=5000
         )
         mongodb_client.admin.command('ping')
-        print("Connected to MongoDB!")
+        app_print("Connected to MongoDB!")
         
         # Initialize the AsyncOpenAI client with the API key
         api_key = os.getenv("OPENAI_API_KEY")
@@ -144,16 +162,16 @@ async def lifespan(app: FastAPI):
         # Set this client as the default for the Agents SDK
         set_default_openai_client(openai_client, use_for_tracing=True)
         
-        print("Initialized AsyncOpenAI client and set as default for Agents SDK")
-        
+        app_print("Initialized AsyncOpenAI client and set as default for Agents SDK")
+  
         yield
     except Exception as e:
-        print(f"Startup error: {e}")
+        app_print(f"Startup error: {e}")
         raise
     finally:
         if mongodb_client:
             mongodb_client.close()
-            print("Closed MongoDB connection")
+            app_print("Closed MongoDB connection")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -211,7 +229,6 @@ async def search_incident_context(wrapper: RunContextWrapper[IncidentContext], q
     
     The limit parameter controls the number of results (recommended: 5-10).
     """
-    print(f"DEBUG: search_incident_context called with query='{query}', limit={limit}")
     try:
         context = wrapper.context
         collection = context.mongodb_client[DB_NAME][COLLECTION_NAME]
@@ -220,7 +237,6 @@ async def search_incident_context(wrapper: RunContextWrapper[IncidentContext], q
         if not limit or limit <= 0:
             limit = 5
         
-        # Use the async client
         query_embedding_response = await context.openai_client.embeddings.create(
             model="text-embedding-ada-002",
             input=query
@@ -247,10 +263,10 @@ async def search_incident_context(wrapper: RunContextWrapper[IncidentContext], q
         context.last_results = contexts
         context.search_history.append({"query": query, "result_count": len(contexts)})
         
-        print(f"DEBUG: search_incident_context found {len(contexts)} results")
+        app_print("ran search_incident_context()")
         return " ".join(contexts)
     except Exception as e:
-        print(f"ERROR in search_incident_context: {str(e)}")
+        app_print(f"ERROR in search_incident_context: {str(e)}")
         traceback.print_exc()
         return f"Error searching context: {str(e)}"
 
@@ -343,12 +359,12 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
         context.last_results = formatted_results
         context.search_history.append({"query": query, "query_type": query_type, "result_count": len(results)})
         
-        print("ran query_incidents_db()")
+        app_print("ran query_incidents_db()")
         return "\n".join(formatted_results)
     except json.JSONDecodeError:
         return "Error: Could not parse the query structure"
     except Exception as e:
-        print(f"Error querying structured data: {str(e)}")
+        app_print(f"Error querying structured data: {str(e)}")
         return f"Error querying structured data: {str(e)}"
 
 @function_tool
@@ -402,11 +418,11 @@ async def assess_and_refine_context(wrapper: RunContextWrapper[IncidentContext],
             messages=messages
         )
         
-        print("ran assess_and_refine_context()")
+        app_print("ran assess_and_refine_context()")
         return response.choices[0].message.content
             
     except Exception as e:
-        print(f"Error assessing context: {str(e)}")
+        app_print(f"Error assessing context: {str(e)}")
         return context_text
 
 # ---------------------------
@@ -455,8 +471,7 @@ def create_incident_agent():
 # Chat Endpoint Using Runner
 # ---------------------------
 @app.post("/chat", response_model=Dict[str, Any])
-async def chat_endpoint(request: MessageRequest, debug: bool = False):
-    print(f"DEBUG: Processing chat request: '{request.message}'")
+async def chat_endpoint(request: MessageRequest):
     try:
         # Create agent context with necessary clients
         agent_context = IncidentContext(
@@ -466,9 +481,8 @@ async def chat_endpoint(request: MessageRequest, debug: bool = False):
         
         # Create the incident agent
         incident_agent = create_incident_agent()
-        print(f"DEBUG: Created incident agent with {len(incident_agent.tools)} tools")
         
-        # Configure the run
+        # Configure the run with tracing disabled
         run_config = RunConfig(
             workflow_name="Incident Analysis",
             model="gpt-4-1106-preview",  # Use a model known to work well with function calling
@@ -476,7 +490,6 @@ async def chat_endpoint(request: MessageRequest, debug: bool = False):
         )
         
         try:
-            print("DEBUG: Starting agent run")
             # Run the agent
             result = await Runner.run(
                 starting_agent=incident_agent,
@@ -486,30 +499,15 @@ async def chat_endpoint(request: MessageRequest, debug: bool = False):
                 run_config=run_config
             )
             
-            print(f"DEBUG: Agent run completed, result type: {type(result).__name__}")
-            
-            # Prepare response
-            response = {"context": result.final_output}
-            
-            # Add debug information if requested
-            if debug:
-                response["debug"] = {
-                    "tool_calls": agent_context.search_history,
-                    "last_query": agent_context.last_query,
-                    "result_type": type(result).__name__,
-                    "has_final_output": hasattr(result, "final_output"),
-                }
-            
-            return response
+            # Return the final output
+            return {"context": result.final_output}
             
         except Exception as e:
-            print(f"Agent execution error: {str(e)}")
-            traceback.print_exc()
+            app_print(f"Agent execution error: {str(e)}")
             return {"context": f"I encountered an issue while processing your request: {str(e)}"}
         
     except Exception as e:
-        print(f"Chat error: {str(e)}")
-        traceback.print_exc()
+        app_print(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------
@@ -593,7 +591,7 @@ async def get_incidents(skip: int = 0, limit: int = 10):
         }
 
     except Exception as e:
-        print(f"Error fetching incidents: {str(e)}")
+        app_print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # ---------------------------
@@ -658,7 +656,7 @@ async def upload_documents(files: List[UploadFile]):
                         }
                     })
                 except Exception as e:
-                    print(f"Error creating embedding: {str(e)}")
+                    app_print(f"Error creating embedding: {str(e)}")
                     continue
             
             if embedded_chunks:
@@ -670,5 +668,5 @@ async def upload_documents(files: List[UploadFile]):
             "status": "success"
         }
     except Exception as e:
-        print(f"Upload error: {str(e)}")
+        app_print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
