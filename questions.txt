@@ -1,0 +1,27 @@
+Demo Questions:
+1. Please find all the incidents related to the GTSM-ServiceMgmt-IPRE team
+2. How can we solve the GTSM service management IPRE incidents
+3. Suggest me the top 10 incidents related to Moogsoft --
+4. Can you provide more details on the corrective measures taken to resolve the configuration error in the Moogsoft integration process?
+5. What are the root causes and solutions for high priority incidents in ASIA region in the last quarter?
+
+Questions to fix with text to sql tool:
+
+Suggest me the top 10 application names throwing the maximum incidents
+Suggest all the application names throwing the maximum incidents
+What are the applications names captured by Moogsoft
+What are the most common Moogsoft related incidents
+
+
+Questions calling both structured and unstructured data:
+What are the most common types of failures in the ASIA region, and how were they resolved?
+
+
+
+
+The flow is now:
+Receive user question
+Use GPT to analyze and plan the context gathering strategy
+Execute the planned queries/searches based on the analysis
+Assess and refine the gathered context
+Return the refined, relevant context to the frontend
