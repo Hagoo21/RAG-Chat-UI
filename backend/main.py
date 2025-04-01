@@ -377,64 +377,6 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
     except Exception as e:
         return f"Error querying structured data: {str(e)}"
 
-@function_tool
-async def assess_and_refine_context(wrapper: RunContextWrapper[IncidentContext], context_text: str, question: str) -> str:
-    """Refine and organize context by removing duplicates and formatting clearly.
-    
-    Use this tool after retrieving information with search_incident_context or query_incidents_db when:
-    - The retrieved information contains duplicates
-    - The context needs better organization
-    - Multiple pieces of information need to be combined coherently
-    - The raw context is difficult to understand
-    
-    This tool helps prepare the final, well-structured response.
-    """
-    try:
-        context = wrapper.context
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a context refinement assistant. Your job is to:\n"
-                    "1. Remove redundant or duplicate information while preserving unique data points\n"
-                    "2. Format the text to be clearly organized\n"
-                    "3. Keep the original information intact - DO NOT answer the question\n\n"
-                    "For structured data:\n"
-                    "- Keep all unique incident entries\n"
-                    "- Maintain statistical information\n"
-                    "- Format in clear sections\n\n"
-                    "For unstructured data:\n"
-                    "- Remove duplicate passages\n"
-                    "- Keep detailed information intact\n"
-                    "- Maintain specific examples and procedures\n\n"
-                    "If the context is very long (>1000 words):\n"
-                    "- Preserve all technical details (error codes, commands, specific procedures)\n"
-                    "- Keep exact metrics and statistics\n"
-                    "- Summarize descriptive passages while maintaining technical accuracy\n"
-                    "- Combine similar incidents while preserving unique identifiers\n"
-                    "- Keep specific timestamps and incident IDs\n"
-                    "- Maintain critical troubleshooting steps\n\n"
-                    "Return the refined context as a string with clear sections."
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Question: {question}\n\nContext to refine: {context_text}"
-            }
-        ]
-        
-        # Make sure to await the async call
-        response = await context.openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=messages
-        )
-        
-        return response.choices[0].message.content
-            
-    except Exception as e:
-        print(f"Error assessing context: {str(e)}")
-        return context_text
-
 # ---------------------------
 # Create Incident Analysis Agent
 # ---------------------------
@@ -461,20 +403,22 @@ def create_incident_agent():
             "  * 'Which priority level has the most incidents?'\n"
             "  * Questions explicitly asking for numerical data or trends\n\n"
             
-            "- After retrieving information, use assess_and_refine_context to organize and improve the presentation.\n\n"
-            
             "PROCESS FOR ANSWERING QUESTIONS:\n"
             "1. Analyze the question to determine if it requires detailed information (use search_incident_context) "
             "   or quantitative data (use query_incidents_db).\n"
             "2. For most questions, start with search_incident_context unless the question explicitly asks for counts, "
             "   statistics, or 'top N' type information.\n"
             "3. If the initial results don't fully answer the question, consider using the other tool or refining your query.\n"
-            "4. Use assess_and_refine_context to organize the information into a clear, coherent response.\n"
-            "5. Provide a comprehensive answer that directly addresses the user's question.\n\n"
+            "4. Provide a comprehensive answer that directly addresses the user's question.\n\n"
             
-            "Always explain your reasoning and strategy. Be thorough in your analysis but concise in your final response."
+            "Always explain your reasoning and strategy. Be thorough in your analysis but concise in your final response.\n"
+            "When formatting your responses:\n"
+            "- Organize content in a clear, logical structure\n"
+            "- Combine related information coherently\n"
+            "- Ensure technical accuracy while maintaining clarity\n"
+            "- Present information in order of relevance\n"
         ),
-        tools=[search_incident_context, query_incidents_db, assess_and_refine_context]
+        tools=[search_incident_context, query_incidents_db]
     )
 
 # ---------------------------
