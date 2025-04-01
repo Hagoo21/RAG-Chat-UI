@@ -59,13 +59,6 @@ export default function action(state, dispatch) {
       if (!typeingMessage?.content) return;
     
       try {
-        // Get context from the /chat endpoint
-        const contextResponse = await getContext(typeingMessage.content);
-        const context = contextResponse.context;
-        
-        // Create message with context
-        const messageWithContext = `Context: ${context}\n\nQuestion: ${typeingMessage.content}`;
-    
         // Store the original message in chat history
         const messages = [...(chat[currentChat].messages || []), {
           ...typeingMessage,
@@ -75,11 +68,19 @@ export default function action(state, dispatch) {
         let newChat = [...chat];
         newChat[currentChat] = { ...chat[currentChat], messages };
 
+        // Set thinking state immediately
         setState({
           is: { ...is, thinking: true },
           typeingMessage: { content: '' },
           chat: newChat,
         });
+
+        // Get context from the /chat endpoint
+        const contextResponse = await getContext(typeingMessage.content);
+        const context = contextResponse.context;
+        
+        // Create message with context
+        const messageWithContext = `Context: ${context}\n\nQuestion: ${typeingMessage.content}`;
 
         const controller = new AbortController();
 
@@ -129,7 +130,6 @@ export default function action(state, dispatch) {
               chat: newChat,
             });
           },
-          onStar() {},
           onEnd() {
             setState({
               is: { ...is, thinking: false },
@@ -148,7 +148,7 @@ export default function action(state, dispatch) {
                 is: { ...is, thinking: false },
               });
             }
-          },
+          }
         });
       } catch (error) {
         console.error('Send message error:', error);
