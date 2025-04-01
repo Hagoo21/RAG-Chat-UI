@@ -275,7 +275,7 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
         try:
             collection_stats = context.mongodb_client[DB_NAME].command("collstats", "Structured_Data")
         except Exception as e:
-            return (f"Error getting collection stats: {str(e)}", file=log_file)
+            print(f"Error getting collection stats: {str(e)}")
         
         # Create a query conversion agent
         query_conversion_messages = [
