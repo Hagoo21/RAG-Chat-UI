@@ -24,24 +24,6 @@ from agents import Agent, RunContextWrapper, Runner, function_tool
 from agents.run import RunConfig
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 
-import sys
-import builtins
-
-# Open a log file for application output
-log_file = open("app_output.log", "a")
-
-# Store the original stdout
-original_stdout = sys.stdout
-
-# Function to print application messages to file
-def app_print(*args, **kwargs):
-    print(*args, file=log_file, **kwargs)
-    log_file.flush()
-
-# Now use app_print for your application logs
-# Example: app_print("This goes to the file")
-# Regular print("This goes to terminal") will still go to terminal
-
 # ---------------------------
 # Pydantic models
 # ---------------------------
@@ -113,10 +95,8 @@ openai_client = None
 api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    app_print("WARNING: OPENAI_API_KEY environment variable is not set!")
-    app_print("Tool calls and agent functionality may not work correctly.")
-    # You could set a default key here for development, but not recommended for production
-    # api_key = "your-api-key-here"  # NOT RECOMMENDED for production
+    print("WARNING: OPENAI_API_KEY environment variable is not set!")
+    print("Tool calls and agent functionality may not work correctly.")
 
 # Set up the API key for both the OpenAI client and tracing
 if api_key:
@@ -129,11 +109,11 @@ if api_key:
     # Enable verbose logging for debugging
     enable_verbose_stdout_logging()
     
-    app_print("OpenAI API key configured for both client and tracing")
+    print("OpenAI API key configured for both client and tracing")
 else:
     # Disable tracing if no API key is available
     set_tracing_disabled(True)
-    app_print("Tracing disabled due to missing API key")
+    print("Tracing disabled due to missing API key")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -150,7 +130,7 @@ async def lifespan(app: FastAPI):
             serverSelectionTimeoutMS=5000
         )
         mongodb_client.admin.command('ping')
-        app_print("Connected to MongoDB!")
+        print("Connected to MongoDB!")
         
         # Initialize the AsyncOpenAI client with the API key
         api_key = os.getenv("OPENAI_API_KEY")
@@ -162,16 +142,16 @@ async def lifespan(app: FastAPI):
         # Set this client as the default for the Agents SDK
         set_default_openai_client(openai_client, use_for_tracing=True)
         
-        app_print("Initialized AsyncOpenAI client and set as default for Agents SDK")
+        print("Initialized AsyncOpenAI client and set as default for Agents SDK")
   
         yield
     except Exception as e:
-        app_print(f"Startup error: {e}")
+        print(f"Startup error: {e}")
         raise
     finally:
         if mongodb_client:
             mongodb_client.close()
-            app_print("Closed MongoDB connection")
+            print("Closed MongoDB connection")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -263,10 +243,10 @@ async def search_incident_context(wrapper: RunContextWrapper[IncidentContext], q
         context.last_results = contexts
         context.search_history.append({"query": query, "result_count": len(contexts)})
         
-        app_print("ran search_incident_context()")
         return " ".join(contexts)
+        
     except Exception as e:
-        app_print(f"ERROR in search_incident_context: {str(e)}")
+        print(f"ERROR in search_incident_context: {str(e)}")
         traceback.print_exc()
         return f"Error searching context: {str(e)}"
 
@@ -286,11 +266,7 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
     
     For most other questions, use search_incident_context instead.
     """
-    try:
-        # Log the start of the function
-        with open("app_output.log", "a") as log_file:
-            print(f"Starting query_incidents_db with query: {query}, type: {query_type}", file=log_file)
-        
+    try:        
         context = wrapper.context
         collection = context.mongodb_client[DB_NAME]["Structured_Data"]
         
@@ -298,11 +274,8 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
         collection_stats = {}
         try:
             collection_stats = context.mongodb_client[DB_NAME].command("collstats", "Structured_Data")
-            with open("app_output.log", "a") as log_file:
-                print(f"Collection stats: {collection_stats}", file=log_file)
         except Exception as e:
-            with open("app_output.log", "a") as log_file:
-                print(f"Error getting collection stats: {str(e)}", file=log_file)
+            return (f"Error getting collection stats: {str(e)}", file=log_file)
         
         # Create a query conversion agent
         query_conversion_messages = [
@@ -335,8 +308,6 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
             }
         ]
         
-        with open("app_output.log", "a") as log_file:
-            print("Sending query to OpenAI for conversion to MongoDB query", file=log_file)
         
         try:
             # Use structured output format to get JSON directly
@@ -347,18 +318,12 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
             )
             
             response_content = query_response.choices[0].message.content
-            with open("app_output.log", "a") as log_file:
-                print(f"OpenAI response received: {response_content}", file=log_file)
-                
+            
             # Parse the JSON response directly
             query_object = json.loads(response_content)
-            
-            with open("app_output.log", "a") as log_file:
-                print(f"Parsed query object: {query_object}", file=log_file)
+        
                 
         except Exception as e:
-            with open("app_output.log", "a") as log_file:
-                print(f"Error in OpenAI query conversion: {str(e)}", file=log_file)
             return f"Error converting query to MongoDB format: {str(e)}"
         
         # Add limit if not present to prevent excessive results
@@ -368,29 +333,15 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
                 if not has_limit:
                     query_object["pipeline"].append({"$limit": 50})  # Default limit
                 
-                with open("app_output.log", "a") as log_file:
-                    print(f"Executing aggregation pipeline: {query_object['pipeline']}", file=log_file)
-                
                 results = list(collection.aggregate(query_object["pipeline"]))
             else:
-                find_query = query_object.get("query", {})
-                
-                with open("app_output.log", "a") as log_file:
-                    print(f"Executing find query: {find_query}", file=log_file)
-                
+                find_query = query_object.get("query", {})                
                 results = list(collection.find(find_query, {'_id': 0}).limit(50))  # Default limit
-            
-            with open("app_output.log", "a") as log_file:
-                print(f"Query returned {len(results)} results", file=log_file)
                 
         except Exception as e:
-            with open("app_output.log", "a") as log_file:
-                print(f"Error executing MongoDB query: {str(e)}", file=log_file)
             return f"Error executing database query: {str(e)}"
         
         if not results:
-            with open("app_output.log", "a") as log_file:
-                print("No matching incidents found", file=log_file)
             return "No matching incidents found in structured data."
         
         # Format results
@@ -412,28 +363,18 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
                             f"Region: {result.get('region')}\n"
                             f"Description: {result.get('enhanced_description', '')}...\n"
                         )
-            
-            with open("app_output.log", "a") as log_file:
-                print(f"Formatted {len(formatted_results)} results", file=log_file)
                 
         except Exception as e:
-            with open("app_output.log", "a") as log_file:
-                print(f"Error formatting results: {str(e)}", file=log_file)
             return f"Error formatting query results: {str(e)}"
         
         # Store in context for later reference
         context.last_query = query
         context.last_results = formatted_results
         context.search_history.append({"query": query, "query_type": query_type, "result_count": len(results)})
-        
-        with open("app_output.log", "a") as log_file:
-            print("query_incidents_db completed successfully", file=log_file)
             
         return "\n".join(formatted_results)
         
     except Exception as e:
-        with open("app_output.log", "a") as log_file:
-            print(f"Unexpected error in query_incidents_db: {str(e)}", file=log_file)
         return f"Error querying structured data: {str(e)}"
 
 @function_tool
@@ -491,7 +432,7 @@ async def assess_and_refine_context(wrapper: RunContextWrapper[IncidentContext],
         return response.choices[0].message.content
             
     except Exception as e:
-        app_print(f"Error assessing context: {str(e)}")
+        print(f"Error assessing context: {str(e)}")
         return context_text
 
 # ---------------------------
@@ -572,11 +513,11 @@ async def chat_endpoint(request: MessageRequest):
             return {"context": result.final_output}
             
         except Exception as e:
-            app_print(f"Agent execution error: {str(e)}")
+            print(f"Agent execution error: {str(e)}")
             return {"context": f"I encountered an issue while processing your request: {str(e)}"}
         
     except Exception as e:
-        app_print(f"Chat error: {str(e)}")
+        print(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------
@@ -660,7 +601,7 @@ async def get_incidents(skip: int = 0, limit: int = 10):
         }
 
     except Exception as e:
-        app_print(f"Error fetching incidents: {str(e)}")
+        print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # ---------------------------
@@ -725,7 +666,7 @@ async def upload_documents(files: List[UploadFile]):
                         }
                     })
                 except Exception as e:
-                    app_print(f"Error creating embedding: {str(e)}")
+                    print(f"Error creating embedding: {str(e)}")
                     continue
             
             if embedded_chunks:
@@ -737,5 +678,5 @@ async def upload_documents(files: List[UploadFile]):
             "status": "success"
         }
     except Exception as e:
-        app_print(f"Upload error: {str(e)}")
+        print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
