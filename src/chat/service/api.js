@@ -47,13 +47,13 @@ export async function getIncidents(skip = 0, limit = 10) {
   }
 }
 
-export async function getContext(message) {
+export async function getContext(message, onMessage, onError, onEnd) {
   try {
     const response = await fetch(`${API_URL}/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        'Accept': 'text/event-stream',
       },
       body: JSON.stringify({ message })
     });
@@ -62,11 +62,41 @@ export async function getContext(message) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const data = await response.json();
-    console.log('Context API response:', data);
-    return data;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        onEnd && onEnd();
+        break;
+      }
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          
+          if (data === '[DONE]') {
+            onEnd && onEnd();
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            onMessage && onMessage(parsed);
+          } catch (e) {
+            console.error('Error parsing SSE data:', e);
+          }
+        }
+      }
+    }
   } catch (error) {
     console.error('Chat context error:', error);
-    throw new Error('Failed to fetch chat context.');
+    onError && onError('Failed to fetch chat context.');
   }
 }

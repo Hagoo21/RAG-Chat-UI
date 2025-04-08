@@ -55,7 +55,7 @@ export default function action(state, dispatch) {
     async sendMessage() {
       if (!ensureValidChatState()) return;
     
-      const { typeingMessage, options, chat, is, currentChat } = state;
+      const { typeingMessage, chat, is, currentChat } = state;
       if (!typeingMessage?.content) return;
     
       try {
@@ -75,70 +75,69 @@ export default function action(state, dispatch) {
           chat: newChat,
         });
 
-        // Get context from the /chat endpoint
-        const contextResponse = await getContext(typeingMessage.content);
-        const context = contextResponse.context;
+        let answer = '';
+        let currentTool = null;
         
-        // Create message with context
-        const messageWithContext = `Context: ${context}\n\nQuestion: ${typeingMessage.content}`;
-
-        const controller = new AbortController();
-
-        // Get limited message history
-        const limitedMessages = getLimitedMessageHistory(messages);
-
-        await fetchStream({
-          messages: [
-            // Add system message first
-            {
-              role: "system",
-              content: "You are an incident management assistant tasked with resolving technical issues efficiently. Use available incident data to provide precise, actionable answers. Your responses must be brief and focused on delivering clear, step-by-step guidance. Never speculate or make assumptions - if you don't have enough information to fully answer a question, be direct about what you know and don't know. Offer the best answer based on established best practices without inventing information. Prioritize clarity and direct instructions to help users quickly mitigate incidents."
-            },
-            // Then map through existing messages
-            ...limitedMessages.map((msg, index) => {
-              // Replace the last message with our context-enhanced version
-              if (index === limitedMessages.length - 1) {
-                return {
-                  role: msg.role,
-                  content: `Incident Data: ${context}\n\nQuestion: ${msg.content}`
-                };
-              }
-              return {
-                role: msg.role,
-                content: msg.content
+        // Get streaming response from the chat endpoint
+        await getContext(
+          typeingMessage.content,
+          (data) => {
+            if (data.content) {
+              // Raw response content (token by token)
+              answer += data.content;
+              if (!newChat[currentChat]) return;
+              newChat[currentChat] = {
+                ...chat[currentChat],
+                messages: [
+                  ...messages,
+                  {
+                    content: answer,
+                    role: "assistant",
+                    sentTime: Date.now(),
+                    id: Date.now(),
+                  },
+                ],
               };
-            })
-          ],
-          options: options.openai,
-          signal: controller.signal,
-          onMessage(content) {
-            if (!newChat[currentChat]) return;
-            newChat[currentChat] = {
-              ...chat[currentChat],
-              messages: [
-                ...messages,
-                {
-                  content,
-                  role: "assistant",
-                  sentTime: Date.now(),
-                  id: Date.now(),
-                },
-              ],
-            };
-            setState({
-              is: { ...is, thinking: content.length },
-              chat: newChat,
-            });
+              setState({
+                is: { ...is, thinking: answer.length },
+                chat: newChat,
+              });
+            } else if (data.tool) {
+              // Tool usage notification
+              currentTool = data.tool;
+              // You could show a loading indicator for the specific tool here
+            } else if (data.tool_output) {
+              // Tool output received
+              currentTool = null;
+              // You could show the tool output in a different format here
+            } else if (data.agent_update) {
+              // Agent change notification
+              // You could show this in the UI if desired
+            } else if (data.message) {
+              // Complete message received
+              answer = data.message;
+              if (!newChat[currentChat]) return;
+              newChat[currentChat] = {
+                ...chat[currentChat],
+                messages: [
+                  ...messages,
+                  {
+                    content: answer,
+                    role: "assistant",
+                    sentTime: Date.now(),
+                    id: Date.now(),
+                  },
+                ],
+              };
+              setState({
+                is: { ...is, thinking: false },
+                chat: newChat,
+              });
+            }
           },
-          onEnd() {
-            setState({
-              is: { ...is, thinking: false },
-            });
-          },
-          onError(res) {
-            console.error('Stream error:', res);
-            const { error } = res || {};
-            if (error && newChat[currentChat]) {
+          (error) => {
+            console.error('Stream error:', error);
+            if (newChat[currentChat]) {
               newChat[currentChat] = {
                 ...chat[currentChat],
                 error,
@@ -148,10 +147,15 @@ export default function action(state, dispatch) {
                 is: { ...is, thinking: false },
               });
             }
+          },
+          () => {
+            setState({
+              is: { ...is, thinking: false },
+            });
           }
-        });
+        );
       } catch (error) {
-        console.error('Send message error:', error);
+        console.error('Error sending message:', error);
         setState({
           is: { ...is, thinking: false },
         });
