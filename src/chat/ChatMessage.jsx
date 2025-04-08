@@ -89,7 +89,8 @@ export function MessageBar() {
             onFocus={() => setIs({ inputing: true })} 
             onBlur={() => setIs({ inputing: false })} 
             placeholder="Enter something..." 
-            onChange={setMessage} 
+            onChange={setMessage}
+            onSubmit={sendMessage}
           />
         </div>
         <div className={styles.bar_icon}>

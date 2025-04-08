@@ -18,6 +18,7 @@ export const Textarea = forwardRef((props, ref) => {
     defaultValue,
     transparent,
     onClear,
+    onSubmit,
     ...rest
   } = props;
 
@@ -35,12 +36,9 @@ export const Textarea = forwardRef((props, ref) => {
   }
 
   const handleKeyPress = (event) => {
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-    }
-    if (event.shiftKey && event.key === "Enter") {
-      onChange && onChange(value + "\n");
-      event.preventDefault();
+      onSubmit && onSubmit();
     }
   }
 
@@ -88,6 +86,7 @@ Textarea.propTypes = {
   onClear: Proptypes.func,
   className: Proptypes.string,
   onChange: Proptypes.func,
+  onSubmit: Proptypes.func,
   disable: Proptypes.bool,
   placeholder: Proptypes.string,
   maxHeight: Proptypes.number,
