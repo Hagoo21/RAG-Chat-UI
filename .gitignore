@@ -19,3 +19,9 @@ Thumbs.db
 **/.env
 ./backend/.env
 ./evaluation/.env
+
+# Python cache files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class

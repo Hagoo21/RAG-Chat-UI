@@ -6,6 +6,7 @@ import os
 from typing import List, Dict, Any, Optional
 import json
 from openai import OpenAI, AsyncOpenAI
+from openai.types.responses import ResponseTextDeltaEvent
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from PIL import Image
@@ -20,9 +21,10 @@ import traceback
 from agents import set_default_openai_key, set_tracing_export_api_key, set_tracing_disabled, enable_verbose_stdout_logging, set_default_openai_client
 
 # Updated imports for the Agents SDK
-from agents import Agent, RunContextWrapper, Runner, function_tool
+from agents import Agent, RunContextWrapper, Runner, function_tool, ItemHelpers
 from agents.run import RunConfig
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
+from fastapi.responses import StreamingResponse
 
 # ---------------------------
 # Pydantic models
@@ -424,7 +426,7 @@ def create_incident_agent():
 # ---------------------------
 # Chat Endpoint Using Runner
 # ---------------------------
-@app.post("/chat", response_model=Dict[str, Any])
+@app.post("/chat")
 async def chat_endpoint(request: MessageRequest):
     try:
         # Create agent context with necessary clients
@@ -439,26 +441,51 @@ async def chat_endpoint(request: MessageRequest):
         # Configure the run with tracing disabled
         run_config = RunConfig(
             workflow_name="Incident Analysis",
-            model="gpt-4-1106-preview",  # Use a model known to work well with function calling
-            tracing_disabled=False  # Enable tracing now that we've set the API key properly
+            model="gpt-4-1106-preview",
+            tracing_disabled=False
         )
         
-        try:
-            # Run the agent
-            result = await Runner.run(
-                starting_agent=incident_agent,
-                input=request.message,
-                context=agent_context,
-                max_turns=10,
-                run_config=run_config
-            )
-            
-            # Return the final output
-            return {"context": result.final_output}
-            
-        except Exception as e:
-            print(f"Agent execution error: {str(e)}")
-            return {"context": f"I encountered an issue while processing your request: {str(e)}"}
+        async def generate():
+            try:
+                # Run the agent with streaming
+                result = Runner.run_streamed(
+                    starting_agent=incident_agent,
+                    input=request.message,
+                    context=agent_context,
+                    max_turns=10,
+                    run_config=run_config
+                )
+                
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        # Stream the raw response events directly
+                        yield f"data: {json.dumps({'content': event.data.delta})}\n\n"
+                    elif event.type == "run_item_stream_event":
+                        if event.item.type == "tool_call_item":
+                            # Notify about tool usage
+                            yield f"data: {json.dumps({'tool': 'Tool was called'})}\n\n"
+                        elif event.item.type == "tool_call_output_item":
+                            # Send tool outputs
+                            yield f"data: {json.dumps({'tool_output': event.item.output})}\n\n"
+                        elif event.item.type == "message_output_item":
+                            # Send complete messages using ItemHelpers
+                            yield f"data: {json.dumps({'message': ItemHelpers.text_message_output(event.item)})}\n\n"
+                    elif event.type == "agent_updated_stream_event":
+                        # Notify about agent changes
+                        yield f"data: {json.dumps({'agent_update': event.new_agent.name})}\n\n"
+                
+                yield "data: [DONE]\n\n"
+                
+            except Exception as e:
+                print(f"Agent execution error: {str(e)}")
+                traceback.print_exc()
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+        
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream"
+        )
         
     except Exception as e:
         print(f"Chat error: {str(e)}")
