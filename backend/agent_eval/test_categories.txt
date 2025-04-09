@@ -1,0 +1,91 @@
+Incident Analysis Agent Test Categories
+
+Dataset Structure:
+- user_message: Question/prompt
+- chat_context: Previous conversation history (if any)
+- correct_response: Expected response template
+
+Tool Selection:
+- search_incident_context (Detailed info):
+  Q1: "Please find all the incidents related to the GTSM-ServiceMgmt-IPRE team"
+  Q2: "How can we solve the GTSM service management IPRE incidents"
+  Q4: "Can you provide more details on the corrective measures taken to resolve the configuration error in the Moogsoft integration process?"
+  Q9: "Can you explain the root cause of the server outage?"
+  Q10: "What was the impact of the network failure on customer services?"
+  Q11: "Show me all incidents related to authentication failures"
+  Q12: "What preventive measures were implemented after the major outage?"
+  Q16: "Can you provide more details about the GTSM team's incident patterns?"
+
+- query_incidents_db (Quantitative data):
+  Q3: "Suggest me the top 10 incidents related to Moogsoft"
+  Q5: "What are the root causes and solutions for high priority incidents in ASIA region?"
+  Q6: "Suggest me the top 10 application names throwing the maximum incidents"
+  Q7: "What are the applications names captured by Moogsoft"
+  Q8: "What are the most common Moogsoft related incidents"
+  Q13: "Can you analyze the correlation between system updates and incident frequency?"
+  Q14: "What were the common factors in service disruptions?"
+
+- Both tools (Complex queries):
+  Q15: "How does this compare to other regions?"
+  Q17: "What about the Moogsoft integration issues?"
+  Q18: "What's the impact on our top applications?"
+
+Data Types:
+- Team-specific:
+  Q1: GTSM-ServiceMgmt-IPRE team incidents
+  Q2: GTSM service management solutions
+  Q16: GTSM team incident patterns
+
+- Application-specific:
+  Q6: Top 10 applications with incidents
+  Q7: Moogsoft-monitored applications
+  Q18: Top applications impact analysis
+
+- Region-specific:
+  Q5: ASIA region incidents
+  Q15: Regional comparison
+
+- Integration-specific:
+  Q3: Moogsoft incidents
+  Q4: Moogsoft integration configuration
+  Q8: Moogsoft-related incidents
+  Q17: Moogsoft integration follow-up
+
+- Incident-specific:
+  Q9: Server outage analysis
+  Q10: Network failure impact
+  Q11: Authentication failures
+  Q12: Outage preventive measures
+  Q14: Service disruption factors
+
+Analysis Capabilities:
+- Pattern Analysis:
+  Q16: Team incident patterns
+  Q18: Application impact patterns
+
+- Correlation Analysis:
+  Q13: System updates and incident frequency
+  Q5: Root causes and solutions
+  Q14: Service disruption factors
+
+- Comparative Analysis:
+  Q15: Regional comparison
+  Q16: Team performance comparison
+  Q18: Application impact comparison
+
+- Impact Analysis:
+  Q10: Network failure impact
+  Q9: Server outage impact
+  Q18: Application impact
+
+- Context Awareness:
+  Q15: Regional comparison follow-up
+  Q17: Moogsoft integration follow-up
+  Q16: GTSM team pattern follow-up
+  Q18: Application impact follow-up
+
+Response Quality Examples:
+- Detailed Explanations: Q2, Q4, Q9, Q16
+- Quantitative Data: Q3, Q6, Q7, Q14
+- Qualitative Insights: Q15, Q17, Q18
+- Actionable Recommendations: Q12, Q13, Q16 
