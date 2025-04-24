@@ -16,7 +16,6 @@ import base64
 from datetime import datetime
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 import traceback
 from agents import set_default_openai_key, set_tracing_export_api_key, set_tracing_disabled, enable_verbose_stdout_logging, set_default_openai_client
 
@@ -26,64 +25,15 @@ from agents.run import RunConfig
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 from fastapi.responses import StreamingResponse
 
-# ---------------------------
-# Pydantic models
-# ---------------------------
+# Import tools and context from incident_agents.py
+from incident_agent import IncidentContext, search_incident_context, query_incidents_db, create_incident_agent
+
 class MessageRequest(BaseModel):
     message: str
 
-class SQLQueryFunction(BaseModel):
-    query: str = Field(..., description="The SQL query to execute")
-
-class ChatFunction(BaseModel):
-    message: str = Field(..., description="The message to process using RAG")
-
-class FunctionCall(BaseModel):
-    name: str
-    arguments: str
-
-class AgentAction(BaseModel):
-    tool: str
-    tool_input: Dict[str, Any]
-    thought: str
-
-class AgentFinish(BaseModel):
-    return_value: str
-    thought: str
-
-class SearchParams(BaseModel):
-    query: str
-    limit: Optional[int] = 5
-
-class StructuredQueryParams(BaseModel):
-    query: str
-    query_type: str
-
-# Structured output model for incident responses
-class IncidentResponse(BaseModel):
-    answer: str
-    sources: List[str] = Field(default_factory=list)
-    confidence: float = Field(ge=0.0, le=1.0)
-    query_details: Optional[Dict[str, Any]] = None
-
-# ---------------------------
-# Agent Context
-# ---------------------------
-@dataclass
-class IncidentContext:
-    mongodb_client: Any
-    openai_client: Any
-    last_query: str = None
-    last_results: Any = None
-    search_history: List[Dict[str, Any]] = None
-    
-    def __post_init__(self):
-        if self.search_history is None:
-            self.search_history = []
-
-# ---------------------------
-# Environment and Globals
-# ---------------------------
+# ===========================
+# Environment and Configuration
+# ===========================
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
 DB_NAME = "ChatMIM"
@@ -117,6 +67,9 @@ else:
     set_tracing_disabled(True)
     print("Tracing disabled due to missing API key")
 
+# ===========================
+# FastAPI Application Setup
+# ===========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global mongodb_client, openai_client
@@ -169,9 +122,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------
+# ===========================
 # Utility Functions
-# ---------------------------
+# ===========================
 def create_text_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 50) -> List[str]:
     chunks = []
     start = 0
@@ -195,237 +148,9 @@ def create_text_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 5
     
     return chunks
 
-# ---------------------------
-# Tool Functions Using function_tool Decorator
-# ---------------------------
-@function_tool
-async def search_incident_context(wrapper: RunContextWrapper[IncidentContext], query: str, limit: int) -> str:
-    """Search through unstructured incident documentation using semantic search to find detailed information.
-    
-    This is the PRIMARY tool for most queries and should be used FIRST for:
-    - Finding specific incident details
-    - Retrieving troubleshooting steps
-    - Getting explanations or context about incidents
-    - Understanding procedures, policies, or technical information
-    - Answering "how" and "why" questions
-    
-    The limit parameter controls the number of results (recommended: 5-10).
-    """
-    try:
-        context = wrapper.context
-        collection = context.mongodb_client[DB_NAME][COLLECTION_NAME]
-        
-        # If limit is not provided or invalid, use a reasonable default
-        if not limit or limit <= 0:
-            limit = 5
-        
-        query_embedding_response = await context.openai_client.embeddings.create(
-            model="text-embedding-ada-002",
-            input=query
-        )
-        query_embedding = query_embedding_response.data[0].embedding
-
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": "vector_search_index",
-                    "path": "embedding",
-                    "queryVector": query_embedding,
-                    "numCandidates": limit * 20,
-                    "limit": limit
-                }
-            }
-        ]
-
-        results = list(collection.aggregate(pipeline))
-        contexts = [doc["text"] for doc in results]
-        
-        # Store in context for later reference
-        context.last_query = query
-        context.last_results = contexts
-        context.search_history.append({"query": query, "result_count": len(contexts)})
-        
-        return " ".join(contexts)
-        
-    except Exception as e:
-        print(f"ERROR in search_incident_context: {str(e)}")
-        traceback.print_exc()
-        return f"Error searching context: {str(e)}"
-
-@function_tool
-async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query: str, query_type: str) -> str:
-    """Query structured incident data to get quantitative information and statistics.
-    
-    Use this tool ONLY for:
-    - Counting incidents by category, region, priority, etc.
-    - Finding the "top N" or "most common" incidents
-    - Getting numerical metrics or statistics
-    - Aggregating data for trends analysis
-    - Questions requiring precise counts or measurements
-    
-    Results are limited to a maximum of 50 documents for performance reasons.
-    Valid query_type values: exact_match, text_search, aggregation.
-    
-    For most other questions, use search_incident_context instead.
-    """
-    try:        
-        context = wrapper.context
-        collection = context.mongodb_client[DB_NAME]["Structured_Data"]
-        
-        # Check if the collection exists and has data
-        collection_stats = {}
-        try:
-            collection_stats = context.mongodb_client[DB_NAME].command("collstats", "Structured_Data")
-        except Exception as e:
-            print(f"Error getting collection stats: {str(e)}")
-        
-        # Create a query conversion agent
-        query_conversion_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Convert natural language queries to MongoDB queries. "
-                    "Important field definitions:\n"
-                    "- 'source': The platform that detected the incident (e.g., 'Datadog', 'Splunk', 'PagerDuty')\n"
-                    "- 'enhanced_description': Contains details about the incident including technologies affected\n"
-                    "- 'id': Unique identifier for the incident\n"
-                    "- 'priority': Incident priority level (lower numbers are higher priority)\n"
-                    "- 'region': Geographic region where the incident occurred\n\n"
-                    "For queries about specific technologies or applications having issues, use regex search on the 'enhanced_description' field.\n\n"
-                    "For 'top N' queries, ALWAYS use an aggregation pipeline with $group, $sort, and $limit stages.\n\n"
-                    "Example formats:\n"
-                    "1. Top 10 sources with most incidents:\n"
-                    '{"pipeline": [{"$group": {"_id": "$source", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 10}]}\n'
-                    "2. Top applications mentioned in descriptions:\n"
-                    '{"pipeline": [{"$match": {"enhanced_description": {"$regex": "application", "$options": "i"}}}, '
-                    '{"$group": {"_id": "$source", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 10}]}\n'
-                    "3. Simple filter:\n"
-                    '{"query": {"region": "ASIA", "priority": {"$lte": 2}}}\n'
-                    "IMPORTANT: For queries about 'top', 'most', or 'maximum', you MUST use an aggregation pipeline with proper sorting and limiting."
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Convert this query to MongoDB JSON query: {query}"
-            }
-        ]
-        
-        
-        try:
-            # Use structured output format to get JSON directly
-            query_response = await context.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=query_conversion_messages,
-                response_format={"type": "json_object"}  # Request JSON output format
-            )
-            
-            response_content = query_response.choices[0].message.content
-            
-            # Parse the JSON response directly
-            query_object = json.loads(response_content)
-        
-                
-        except Exception as e:
-            return f"Error converting query to MongoDB format: {str(e)}"
-        
-        # Add limit if not present to prevent excessive results
-        try:
-            if "pipeline" in query_object:
-                has_limit = any("$limit" in str(stage) for stage in query_object["pipeline"])
-                if not has_limit:
-                    query_object["pipeline"].append({"$limit": 50})  # Default limit
-                
-                results = list(collection.aggregate(query_object["pipeline"]))
-            else:
-                find_query = query_object.get("query", {})                
-                results = list(collection.find(find_query, {'_id': 0}).limit(50))  # Default limit
-                
-        except Exception as e:
-            return f"Error executing database query: {str(e)}"
-        
-        if not results:
-            return "No matching incidents found in structured data."
-        
-        # Format results
-        try:
-            formatted_results = []
-            for result in results:
-                if isinstance(result, dict):
-                    if 'count' in result or '_id' in result:
-                        formatted_results.append(
-                            f"Group: {result.get('_id', 'N/A')}\n"
-                            f"Count: {result.get('count', 'N/A')}\n"
-                            f"Additional Data: {', '.join([f'{k}: {v}' for k, v in result.items() if k not in ['_id', 'count']])}"
-                        )
-                    else:
-                        formatted_results.append(
-                            f"ID: {result.get('id')}\n"
-                            f"Source: {result.get('source')}\n"
-                            f"Priority: {result.get('priority')}\n"
-                            f"Region: {result.get('region')}\n"
-                            f"Description: {result.get('enhanced_description', '')}...\n"
-                        )
-                
-        except Exception as e:
-            return f"Error formatting query results: {str(e)}"
-        
-        # Store in context for later reference
-        context.last_query = query
-        context.last_results = formatted_results
-        context.search_history.append({"query": query, "query_type": query_type, "result_count": len(results)})
-            
-        return "\n".join(formatted_results)
-        
-    except Exception as e:
-        return f"Error querying structured data: {str(e)}"
-
-# ---------------------------
-# Create Incident Analysis Agent
-# ---------------------------
-def create_incident_agent():
-    return Agent[IncidentContext](
-        name="incident_analysis_agent",
-        instructions=(
-            "You are an incident analysis agent specializing in retrieving and analyzing incident information. "
-            "You have access to two primary data sources:\n"
-            "1. Unstructured incident documentation (accessed via search_incident_context)\n"
-            "2. Structured incident data with fields: id, source, priority, region, and description (accessed via query_incidents_db)\n\n"
-            
-            "IMPORTANT TOOL SELECTION GUIDELINES:\n"
-            "- Use search_incident_context as your PRIMARY tool for MOST queries. This tool should be your FIRST choice for:\n"
-            "  * Finding detailed information about incidents\n"
-            "  * Retrieving troubleshooting steps or procedures\n"
-            "  * Understanding the context, causes, or impacts of incidents\n"
-            "  * Answering questions about 'how' or 'why' something happened\n"
-            "  * Getting explanations or technical details\n\n"
-            
-            "- Use query_incidents_db ONLY for quantitative questions requiring statistics or counts, such as:\n"
-            "  * 'How many incidents occurred in region X?'\n"
-            "  * 'What are the top 10 sources of incidents?'\n"
-            "  * 'Which priority level has the most incidents?'\n"
-            "  * Questions explicitly asking for numerical data or trends\n\n"
-            
-            "PROCESS FOR ANSWERING QUESTIONS:\n"
-            "1. Analyze the question to determine if it requires detailed information (use search_incident_context) "
-            "   or quantitative data (use query_incidents_db).\n"
-            "2. For most questions, start with search_incident_context unless the question explicitly asks for counts, "
-            "   statistics, or 'top N' type information.\n"
-            "3. If the initial results don't fully answer the question, consider using the other tool or refining your query.\n"
-            "4. Provide a comprehensive answer that directly addresses the user's question.\n\n"
-            
-            "Always explain your reasoning and strategy. Be thorough in your analysis but concise in your final response.\n"
-            "When formatting your responses:\n"
-            "- Organize content in a clear, logical structure\n"
-            "- Combine related information coherently\n"
-            "- Ensure technical accuracy while maintaining clarity\n"
-            "- Present information in order of relevance\n"
-        ),
-        tools=[search_incident_context, query_incidents_db]
-    )
-
-# ---------------------------
-# Chat Endpoint Using Runner
-# ---------------------------
+# ===========================
+# Chat Endpoint
+# ===========================
 @app.post("/chat")
 async def chat_endpoint(request: MessageRequest):
     try:
@@ -491,9 +216,9 @@ async def chat_endpoint(request: MessageRequest):
         print(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ---------------------------
-# Endpoints for Health and Incidents
-# ---------------------------
+# ===========================
+# Health and Monitoring Endpoints
+# ===========================
 @app.get("/health")
 async def health_check():
     try:
@@ -501,7 +226,10 @@ async def health_check():
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
-    
+
+# ===========================
+# Incident PDF Metadata Retrival Endpoint
+# ===========================
 @app.get("/incidents")
 async def get_incidents(skip: int = 0, limit: int = 10):
     try:
@@ -575,9 +303,9 @@ async def get_incidents(skip: int = 0, limit: int = 10):
         print(f"Error fetching incidents: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-# ---------------------------
+# ===========================
 # File Upload Endpoint
-# ---------------------------
+# ===========================
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile]):
     try:
