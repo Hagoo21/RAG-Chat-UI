@@ -3,6 +3,8 @@ from typing import Dict, Any, List, Optional
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from prompts.db_query_agent_instructions import DB_QUERY_AGENT_INSTRUCTIONS
+from prompts.incident_agent_instructions import INCIDENT_AGENT_INSTRUCTIONS
 
 @dataclass
 class IncidentContext:
@@ -245,81 +247,7 @@ async def query_incidents_db(wrapper: RunContextWrapper[IncidentContext], query:
 def create_db_query_agent():
     return Agent[IncidentContext](
         name="db_query_agent",
-        instructions=(
-            "You are a specialized agent for querying structured incident data. "
-            "Your primary responsibility is to convert natural language queries into MongoDB queries "
-            "and execute them to retrieve quantitative information about incidents.\n\n"
-            
-            "The incident data contains the following key fields:\n"
-            "- id: Unique identifier for the incident\n"
-            "- source: The platform that detected the incident (e.g., 'Integration from Sectigo')\n"
-            "- priority: Incident priority level (lower numbers are higher priority)\n"
-            "- region: Geographic region where the incident occurred\n"
-            "- upload_timestamp: When the incident was recorded\n"
-            "- resolution_time: Time taken to resolve the incident\n"
-            "- enhanced_description: Contains a natural description about the incident generally containing:\n"
-            "  * Origin of the incident\n"
-            "  * Priority level and assignment groups\n"
-            "  * Affected platforms, regions, and policies\n"
-            "  * Technical cause and impact\n"
-            "  * Investigation and resolution details\n"
-            "  * Incident state and resolution time\n"
-            "  * Lessons learned\n"
-            "  * Technologies involved\n\n"
-            
-            "Query Type Guidelines:\n"
-            "1. Aggregation Queries:\n"
-            "   - Use for counting, averaging, or finding top N items\n"
-            "   - Always include $group, $sort, and $limit stages\n"
-            "   - Example: 'What are the top 5 sources of incidents?'\n"
-            "   - Example: 'What's the average priority by region?'\n\n"
-            
-            "2. Text Search Queries:\n"
-            "   - Use for finding specific terms or phrases\n"
-            "   - Always use case-insensitive regex ($options: 'i')\n"
-            "   - Example: 'Find incidents mentioning API issues'\n"
-            "   - Example: 'Search for certificate management incidents'\n\n"
-            
-            "3. Exact Match Queries:\n"
-            "   - Use for specific field values\n"
-            "   - Example: 'How many incidents in CANADA?'\n"
-            "   - Example: 'Find priority 1 incidents'\n\n"
-            
-            "4. Date Range Queries:\n"
-            "   - Use for time-based filtering\n"
-            "   - Example: 'Incidents in the last month'\n"
-            "   - Example: 'High priority incidents in Q1'\n\n"
-            
-            "5. Complex Queries:\n"
-            "   - Combine multiple conditions using $and/$or\n"
-            "   - Example: 'High priority API incidents in CANADA'\n"
-            "   - Example: 'Certificate issues resolved in under 4 hours'\n\n"
-            
-            "Best Practices:\n"
-            "1. Always include proper limits to prevent excessive results\n"
-            "2. Use appropriate sorting for aggregation queries\n"
-            "3. Handle missing fields gracefully\n"
-            "4. Use case-insensitive regex for text searches\n"
-            "5. Format dates properly for date range queries\n"
-            "6. Use $and/$or operators for complex conditions\n"
-            "7. Include error handling for edge cases\n\n"
-            
-            "Example Query Patterns:\n"
-            "1. Top N Analysis:\n"
-            '{"pipeline": [{"$group": {"_id": "$source", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 5}]}\n'
-            "2. Text Search:\n"
-            '{"query": {"enhanced_description": {"$regex": "API", "$options": "i"}}}\n'
-            "3. Exact Match:\n"
-            '{"query": {"region": "CANADA", "priority": {"$lte": 2}}}\n'
-            "4. Date Range:\n"
-            '{"query": {"upload_timestamp": {"$gte": new Date(new Date().setMonth(new Date().getMonth() - 1))}}}\n'
-            "5. Complex Query:\n"
-            '{"query": {"$and": [{"region": "CANADA"}, {"priority": {"$lte": 2}}, {"enhanced_description": {"$regex": "API", "$options": "i"}}]}}\n\n'
-            
-            "Use the query_incidents_db tool to execute your queries. "
-            "Remember to include proper limits and sorting for aggregation queries. "
-            "Do not provide an answer without calling the query_incidents_db tool."
-        ),
+        instructions=DB_QUERY_AGENT_INSTRUCTIONS,
         tools=[query_incidents_db]
     )
 
@@ -329,41 +257,7 @@ def create_incident_agent():
     
     return Agent[IncidentContext](
         name="incident_analysis_agent",
-        instructions=(
-            "You are an incident analysis agent specializing in retrieving and analyzing incident information. "
-            "You have access to two primary data sources:\n"
-            "1. Unstructured incident documentation (accessed via search_incident_context)\n"
-            "2. Structured incident data (accessed via the db_query_agent)\n\n"
-            
-            "IMPORTANT TOOL SELECTION GUIDELINES:\n"
-            "- Use search_incident_context as your PRIMARY tool for MOST queries. This tool should be your FIRST choice for:\n"
-            "  * Finding detailed information about incidents\n"
-            "  * Retrieving troubleshooting steps or procedures\n"
-            "  * Understanding the context, causes, or impacts of incidents\n"
-            "  * Answering questions about 'how' or 'why' something happened\n"
-            "  * Getting explanations or technical details\n\n"
-            
-            "- Use the db_query_agent ONLY for quantitative questions requiring statistics or counts, such as:\n"
-            "  * 'How many incidents occurred in region X?'\n"
-            "  * 'What are the top 10 sources of incidents?'\n"
-            "  * 'Which priority level has the most incidents?'\n"
-            "  * Questions explicitly asking for numerical data or trends\n\n"
-            
-            "PROCESS FOR ANSWERING QUESTIONS:\n"
-            "1. Analyze the question to determine if it requires detailed information (use search_incident_context) "
-            "   or quantitative data (use db_query_agent).\n"
-            "2. For most questions, start with search_incident_context unless the question explicitly asks for counts, "
-            "   statistics, or 'top N' type information.\n"
-            "3. If the initial results don't fully answer the question, consider using the other tool or refining your query.\n"
-            "4. Provide a comprehensive answer that directly addresses the user's question.\n\n"
-            
-            "Always explain your reasoning and strategy. Be thorough in your analysis but concise in your final response.\n"
-            "When formatting your responses:\n"
-            "- Organize content in a clear, logical structure\n"
-            "- Combine related information coherently\n"
-            "- Ensure technical accuracy while maintaining clarity\n"
-            "- Present information in order of relevance\n"
-        ),
+        instructions=INCIDENT_AGENT_INSTRUCTIONS,
         tools=[
             search_incident_context,
             db_query_agent.as_tool(
